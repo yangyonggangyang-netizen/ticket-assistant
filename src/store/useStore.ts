@@ -83,6 +83,7 @@ export const useStore = create<StoreState>((set, get) => ({
         cardNo: info.cardNo,
         wxName: info.wxName,
         wxHeadPortrait: info.wxHeadPortrait,
+        voucherNum: (info as any).voucherNum,
         createdAt: new Date().toISOString(),
         lastActiveAt: new Date().toISOString(),
         tokenValid: true,
@@ -137,6 +138,7 @@ export const useStore = create<StoreState>((set, get) => ({
           score: info.score,
           growthNum: info.growthNum,
           cardNo: info.cardNo,
+          voucherNum: (info as any).voucherNum,
           lastActiveAt: new Date().toISOString(),
           tokenValid: true,
         });
@@ -170,6 +172,7 @@ export const useStore = create<StoreState>((set, get) => ({
           cardNo: info.cardNo,
           wxName: info.wxName,
           wxHeadPortrait: info.wxHeadPortrait,
+          voucherNum: (info as any).voucherNum,
           lastActiveAt: new Date().toISOString(),
           tokenValid: true,
         });

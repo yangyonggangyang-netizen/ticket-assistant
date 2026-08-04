@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User } from 'lucide-react';
+import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User, CalendarDays, Banknote } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import type { Page } from '../App';
@@ -10,12 +10,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const [movies, setMovies] = useState<any[]>([]);
   const [movieCount, setMovieCount] = useState(0);
   const [loadingMovies, setLoadingMovies] = useState(false);
-
-  useEffect(() => {
-    if (selectedCinemaId) {
-      loadMovies();
-    }
-  }, [selectedCinemaId]);
+  const [todayStats, setTodayStats] = useState<{ count: number; income: number; loading: boolean }>({ count: 0, income: 0, loading: false });
 
   const loadMovies = async () => {
     setLoadingMovies(true);
@@ -29,6 +24,61 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
       console.error('Failed to load movies:', e);
     }
     setLoadingMovies(false);
+  };
+
+  useEffect(() => {
+    if (selectedCinemaId) {
+      loadMovies();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCinemaId]);
+
+  useEffect(() => {
+    if (activeAccountId) {
+      loadTodayStats();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAccountId]);
+
+  const loadTodayStats = async () => {
+    setTodayStats((s) => ({ ...s, loading: true }));
+    try {
+      // 拉最近订单（多页，尽量覆盖今日订单）
+      let all: any[] = [];
+      for (let page = 1; page <= 5; page++) {
+        const resp = await api.getOrderList(page, 50);
+        if (!resp.success) break;
+        const data = resp.result as any;
+        const list = Array.isArray(data) ? data : data?.records || [];
+        if (list.length === 0) break;
+        all = all.concat(list);
+        const total = data?.total;
+        if (total && all.length >= Number(total)) break;
+      }
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      // 统计今日已支付电影票订单
+      let count = 0;
+      let income = 0;
+      all.forEach((o: any) => {
+        const createTime = o.create_time || o.createTime || '';
+        if (!createTime || !createTime.startsWith(todayStr)) return;
+        // type 1 = 电影票
+        const type = Number(o.type ?? o.order_type ?? 1);
+        if (type !== 1) return;
+        const payAmount = Number(o.pay_amount ?? o.payAmount ?? 0);
+        const buyNum = Number(o.buy_num ?? o.buyNum ?? o.ticketCount ?? 1);
+        // 已支付：status 判断（1/2 等已支付状态；0 待支付）
+        const status = Number(o.status ?? -1);
+        if (status === 0 || status === -1) return;
+        count += buyNum > 0 ? buyNum : 1;
+        income += payAmount;
+      });
+      setTodayStats({ count, income, loading: false });
+    } catch (e) {
+      console.error('Failed to load today stats:', e);
+      setTodayStats((s) => ({ ...s, loading: false }));
+    }
   };
 
   if (!account) {
@@ -109,6 +159,47 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           value={account.levelDictText || account.level || '--'}
           color="bg-pink-50 text-pink-600"
         />
+      </div>
+
+      {/* 今日出票统计 */}
+      <div className="bg-white rounded-lg border p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-pink-500" />
+            今日出票记录
+          </h3>
+          <button
+            onClick={loadTodayStats}
+            disabled={todayStats.loading}
+            className="flex items-center gap-1 text-xs text-pink-500 hover:text-pink-600 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3 h-3 ${todayStats.loading ? 'animate-spin' : ''}`} />
+            刷新
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-pink-50 rounded-lg p-4">
+            <p className="text-xs text-pink-600 flex items-center gap-1">
+              <Ticket className="w-3.5 h-3.5" />
+              今日出票（张）
+            </p>
+            <p className="text-2xl font-bold text-pink-600 mt-1">
+              {todayStats.loading ? '...' : todayStats.count}
+            </p>
+          </div>
+          <div className="bg-green-50 rounded-lg p-4">
+            <p className="text-xs text-green-600 flex items-center gap-1">
+              <Banknote className="w-3.5 h-3.5" />
+              今日收入（元）
+            </p>
+            <p className="text-2xl font-bold text-green-600 mt-1">
+              {todayStats.loading ? '...' : `¥${todayStats.income.toFixed(2)}`}
+            </p>
+          </div>
+        </div>
+        <p className="text-xs text-gray-400 mt-2">
+          统计当前账号今日已支付电影票订单（票数 + 实付金额）
+        </p>
       </div>
 
       {/* Cinema selector */}
