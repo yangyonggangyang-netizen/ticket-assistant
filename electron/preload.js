@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAlwaysOnTop: () => ipcRenderer.invoke('window:getAlwaysOnTop'),
   saveImage: (dataUrl, defaultName) => ipcRenderer.invoke('image:save', { dataUrl, defaultName }),
   copyImage: (dataUrl) => ipcRenderer.invoke('image:copy', dataUrl),
+  saveVoucherRecord: (phone, content) => ipcRenderer.invoke('voucher:save', { phone, content }),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),

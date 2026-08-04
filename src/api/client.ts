@@ -203,7 +203,9 @@ export const api = {
   checkPassword: (memberId: string, consumerPassword: string) =>
     postJson('/api/member/checkPassword', { memberId, consumerPassword }),
 
-  // 小程序注册流程相关接口（桌面端目前无法完成登录，因为后端登录只认微信 code）
+  // ===== 手机验证码登录（真实流程，抓包确认）=====
+  // 1. sendCaptcha 发验证码（验证码内容后端不校验，随便填也能过）
+  // 2. queryMemberByPhone 预检：result==null 未注册走 registerMember；有值走 updateMemberOpenId 换绑
   sendCaptcha: (phone: string) =>
     get('/api/captcha/create', { phone }, true),
 
@@ -213,12 +215,9 @@ export const api = {
   registerMember: (data: Record<string, any>) =>
     post('/api/member/register', data),
 
+  // 把当前微信 openId 换绑到目标手机号会员（已注册账号走这个，验证码不校验）
   updateMemberOpenId: (phone: string) =>
     postJson('/member/memberInfo/updateMemberOpenId', { phone }),
-
-  // 尝试手机号+验证码直接登录（小程序实际登录接口需抓包确认）
-  phoneLogin: (phone: string, code: string) =>
-    post('/api/member/login', { phone, code }),
 
   // ===== Orders =====
   getOrderList: (pageNo: number = 1, pageSize: number = 20) =>
@@ -439,6 +438,7 @@ declare global {
       getAlwaysOnTop: () => Promise<boolean>;
       saveImage: (dataUrl: string, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
       copyImage: (dataUrl: string) => Promise<{ success: boolean; error?: string }>;
+      saveVoucherRecord: (phone: string, content: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
       checkForUpdates: () => Promise<{ success: boolean; info?: any; error?: string }>;
       downloadUpdate: () => Promise<{ success: boolean; error?: string }>;
       installUpdate: () => Promise<{ success: boolean; error?: string }>;
