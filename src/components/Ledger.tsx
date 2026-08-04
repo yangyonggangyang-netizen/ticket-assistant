@@ -1,7 +1,28 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, CalendarDays } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, CalendarDays, Settings2, Save } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
+
+// 固定卖价配置（localStorage 持久化，可编辑）
+const PRICES_KEY = 'ledger_prices';
+interface LedgerPrices {
+  jinyi: number; // 金逸巨幕影城 卖价
+  jiahe: number; // 嘉和影城 卖价
+}
+function loadPrices(): LedgerPrices {
+  try {
+    const raw = localStorage.getItem(PRICES_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      return { jinyi: Number(p.jinyi) || 30, jiahe: Number(p.jiahe) || 25 };
+    }
+  } catch {}
+  return { jinyi: 30, jiahe: 25 };
+}
+function isJiahe(order: any): boolean {
+  const name = String(order.cinema_name || order.cinemaName || '');
+  return name.includes('嘉和');
+}
 
 // 判断订单是否是电影票
 function isMovieOrder(order: any): boolean {
@@ -55,6 +76,22 @@ export default function Ledger() {
     return { y: d.getFullYear(), m: d.getMonth() }; // m: 0-11
   });
   const [selectedDay, setSelectedDay] = useState<string>('');
+  const [prices, setPrices] = useState<LedgerPrices>(loadPrices);
+  const [priceEdit, setPriceEdit] = useState<LedgerPrices>(loadPrices);
+  const [showPriceEdit, setShowPriceEdit] = useState(false);
+  const [priceMsg, setPriceMsg] = useState('');
+
+  const savePrices = () => {
+    const p = {
+      jinyi: Number(priceEdit.jinyi) || 0,
+      jiahe: Number(priceEdit.jiahe) || 0,
+    };
+    localStorage.setItem(PRICES_KEY, JSON.stringify(p));
+    setPrices(p);
+    setShowPriceEdit(false);
+    setPriceMsg('✅ 卖价已保存');
+    setTimeout(() => setPriceMsg(''), 2000);
+  };
 
   const loadOrders = async () => {
     if (!account) return;
@@ -87,21 +124,27 @@ export default function Ledger() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAccountId]);
 
-  // 按日期聚合电影票订单
+  // 按日期聚合电影票订单（含利润：固定卖价×张数 - 实付金额）
   const daily = useMemo(() => {
-    const map = new Map<string, { tickets: number; income: number; count: number }>();
+    const map = new Map<string, { tickets: number; income: number; count: number; profit: number; cost: number }>();
     orders.forEach((o) => {
       if (!isMovieOrder(o)) return;
       const d = orderDate(o);
       if (!d) return;
-      const cur = map.get(d) || { tickets: 0, income: 0, count: 0 };
-      cur.tickets += orderTickets(o);
-      cur.income += orderAmount(o);
+      const cur = map.get(d) || { tickets: 0, income: 0, count: 0, profit: 0, cost: 0 };
+      const n = orderTickets(o);
+      const amount = orderAmount(o);
+      const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi; // 卖价按影院
+      const income = unitPrice * n; // 卖票收入
+      cur.tickets += n;
+      cur.income += income;
+      cur.cost += amount; // 实际支付成本
+      cur.profit += income - amount; // 利润
       cur.count += 1;
       map.set(d, cur);
     });
     return map;
-  }, [orders]);
+  }, [orders, prices]);
 
   // 当月天数网格
   const days = useMemo(() => {
@@ -125,14 +168,16 @@ export default function Ledger() {
     let tickets = 0;
     let income = 0;
     let count = 0;
+    let profit = 0;
     daily.forEach((v, d) => {
       if (d.startsWith(prefix)) {
         tickets += v.tickets;
         income += v.income;
         count += v.count;
+        profit += v.profit;
       }
     });
-    return { tickets, income, count };
+    return { tickets, income, count, profit };
   }, [daily, viewDate]);
 
   // 年统计
@@ -141,14 +186,16 @@ export default function Ledger() {
     let tickets = 0;
     let income = 0;
     let count = 0;
+    let profit = 0;
     daily.forEach((v, d) => {
       if (d.startsWith(prefix)) {
         tickets += v.tickets;
         income += v.income;
         count += v.count;
+        profit += v.profit;
       }
     });
-    return { tickets, income, count };
+    return { tickets, income, count, profit };
   }, [daily, viewDate]);
 
   // 选中日期的订单明细
@@ -184,17 +231,31 @@ export default function Ledger() {
             <CalendarDays className="w-5 h-5 text-pink-500" />
             记账日历
           </h2>
-          <p className="text-sm text-gray-500">{account.name} · 每日出票记录与收入</p>
+          <p className="text-sm text-gray-500">{account.name} · 每日出票记录与利润</p>
         </div>
-        <button
-          onClick={loadOrders}
-          disabled={loading}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm bg-white border rounded-lg hover:bg-gray-50 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          刷新
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => { setPriceEdit(prices); setShowPriceEdit(true); }}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600"
+            title="设置金逸/嘉和的固定卖价"
+          >
+            <Settings2 className="w-4 h-4" />
+            固定卖价：金逸¥{prices.jinyi} / 嘉和¥{prices.jiahe}
+          </button>
+          <button
+            onClick={loadOrders}
+            disabled={loading}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-white border rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            刷新
+          </button>
+        </div>
       </div>
+
+      {priceMsg && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-2.5 text-sm text-green-700">{priceMsg}</div>
+      )}
 
       {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>}
 
@@ -204,18 +265,20 @@ export default function Ledger() {
           <p className="text-xs text-pink-600 font-medium flex items-center gap-1">
             <TrendingUp className="w-3.5 h-3.5" /> {viewDate.y} 年统计
           </p>
-          <div className="flex gap-6 mt-2">
+          <div className="flex gap-5 mt-2">
             <div>
               <p className="text-2xl font-bold text-pink-600">{yearStats.tickets}</p>
               <p className="text-xs text-pink-500">出票（张）</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-pink-600">¥{yearStats.income.toFixed(2)}</p>
-              <p className="text-xs text-pink-500">收入（元）</p>
+              <p className="text-2xl font-bold text-pink-600">¥{yearStats.income.toFixed(0)}</p>
+              <p className="text-xs text-pink-500">卖票收入</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-pink-600">{yearStats.count}</p>
-              <p className="text-xs text-pink-500">订单（笔）</p>
+              <p className={`text-2xl font-bold ${yearStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {yearStats.profit >= 0 ? '+' : ''}¥{yearStats.profit.toFixed(0)}
+              </p>
+              <p className="text-xs text-gray-500">利润</p>
             </div>
           </div>
         </div>
@@ -223,18 +286,20 @@ export default function Ledger() {
           <p className="text-xs text-green-600 font-medium flex items-center gap-1">
             <CalendarDays className="w-3.5 h-3.5" /> {viewDate.y} 年 {viewDate.m + 1} 月统计
           </p>
-          <div className="flex gap-6 mt-2">
+          <div className="flex gap-5 mt-2">
             <div>
               <p className="text-2xl font-bold text-green-600">{monthStats.tickets}</p>
               <p className="text-xs text-green-500">出票（张）</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-green-600">¥{monthStats.income.toFixed(2)}</p>
-              <p className="text-xs text-green-500">收入（元）</p>
+              <p className="text-2xl font-bold text-green-600">¥{monthStats.income.toFixed(0)}</p>
+              <p className="text-xs text-green-500">卖票收入</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-green-600">{monthStats.count}</p>
-              <p className="text-xs text-green-500">订单（笔）</p>
+              <p className={`text-2xl font-bold ${monthStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {monthStats.profit >= 0 ? '+' : ''}¥{monthStats.profit.toFixed(0)}
+              </p>
+              <p className="text-xs text-gray-500">利润</p>
             </div>
           </div>
         </div>
@@ -289,6 +354,9 @@ export default function Ledger() {
                     <p className="text-[10px] text-green-600 flex items-center gap-0.5">
                       <Banknote className="w-3 h-3" /> ¥{stat.income.toFixed(0)}
                     </p>
+                    <p className={`text-[10px] flex items-center gap-0.5 ${stat.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {stat.profit >= 0 ? '▲' : '▼'} {stat.profit >= 0 ? '+' : ''}¥{stat.profit.toFixed(0)}
+                    </p>
                   </div>
                 )}
               </button>
@@ -316,23 +384,83 @@ export default function Ledger() {
                     return {};
                   }
                 })();
+                const n = orderTickets(o);
+                const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi;
+                const saleIncome = unitPrice * n; // 卖票收入
+                const cost = orderAmount(o); // 实际支付成本
+                const profit = saleIncome - cost; // 每单利润
+                const perTicket = n > 0 ? profit / n : 0;
                 return (
                   <div key={i} className="flex items-center justify-between text-sm bg-gray-50 rounded-lg p-2.5">
                     <div className="flex-1 min-w-0">
                       <p className="truncate font-medium">{msg.filmName || msg.film_name || o.filmName || '电影票'}</p>
                       <p className="text-xs text-gray-400">
-                        {orderDate(o)} {o.create_time?.toString().split(' ')[1]?.substring(0, 5) || ''}
+                        {isJiahe(o) ? '嘉和' : '金逸'} · 卖¥{unitPrice}/{n}张 · 成本¥{cost.toFixed(0)}
                         {' · '}
                         {orderTickets(o)} 张
                         {msg.hallName || o.hallName ? ` · ${msg.hallName || o.hallName}` : ''}
                       </p>
+                      <p className={`text-xs mt-0.5 ${perTicket >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        每张 {perTicket >= 0 ? '+' : ''}¥{perTicket.toFixed(1)}
+                      </p>
                     </div>
-                    <p className="font-bold text-green-600 ml-3">¥{orderAmount(o).toFixed(2)}</p>
+                    <div className="text-right ml-3">
+                      <p className={`font-bold ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {profit >= 0 ? '+' : ''}¥{profit.toFixed(0)}
+                      </p>
+                      <p className="text-[10px] text-gray-400">成本¥{cost.toFixed(0)}</p>
+                    </div>
                   </div>
                 );
               })}
             </div>
           )}
+        </div>
+      )}
+      {/* 固定卖价设置弹窗 */}
+      {showPriceEdit && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setShowPriceEdit(false)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-medium text-lg">固定卖价设置</h3>
+            <p className="text-xs text-gray-400">
+              利润 = 固定卖价 × 张数 - 订单实际支付金额（含观影金抵扣后的实付）。价格可随时修改。
+            </p>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">金逸巨幕影城 · 卖价（元/张）</label>
+              <input
+                type="number"
+                value={priceEdit.jinyi}
+                onChange={(e) => setPriceEdit({ ...priceEdit, jinyi: Number(e.target.value) || 0 })}
+                placeholder="如：30"
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">嘉和影城 · 卖价（元/张）</label>
+              <input
+                type="number"
+                value={priceEdit.jiahe}
+                onChange={(e) => setPriceEdit({ ...priceEdit, jiahe: Number(e.target.value) || 0 })}
+                placeholder="如：25"
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={savePrices}
+                className="flex-1 flex items-center justify-center gap-1 px-4 py-2 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600"
+              >
+                <Save className="w-4 h-4" />
+                确认保存
+              </button>
+              <button
+                onClick={() => setShowPriceEdit(false)}
+                className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
+              >
+                取消
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
