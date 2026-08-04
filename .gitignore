@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist_electron/
+captured_token.json
+*.log
+.DS_Store
+.env
+output/
+win-unpacked/
+appdata/
+freshdata/
+captured_api/
+wxapkg_unpacked/
+*.wxapkg
+.captured_token
+builder-debug.yml
