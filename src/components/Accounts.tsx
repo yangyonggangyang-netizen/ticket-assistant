@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check } from 'lucide-react';
+import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check, RefreshCw, BookMarked } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api, localApi } from '../api/client';
 import type { Account } from '../types';
@@ -8,8 +8,11 @@ const WECHAT_APP_ID = 'wx4fd7f63cb29a8891';
 const launchApplet = (path?: string) =>
   'weixin://launchapplet/?app_id=' + WECHAT_APP_ID + (path ? '&path=' + path : '');
 
+// 隐藏「打开小程序 / 打开登录页 / 打开订单页」三个按钮（保留代码，改这里可恢复）
+const HIDE_APP_BUTTONS = true;
+
 export default function Accounts() {
-  const { accounts, activeAccountId, addAccount, removeAccount, switchAccount, updateAccount, saveToStorage, loading, error } = useStore();
+  const { accounts, activeAccountId, addAccount, removeAccount, switchAccount, updateAccount, saveToStorage, loading, error, refreshActiveAccount, getActiveAccount, selectedCinemaId } = useStore();
   const [showAdd, setShowAdd] = useState(false);
   const [showPhoneLogin, setShowPhoneLogin] = useState(false);
   const [name, setName] = useState('');
@@ -30,6 +33,86 @@ export default function Accounts() {
   const [pwdConfirm, setPwdConfirm] = useState('');
   const [pwdMsg, setPwdMsg] = useState('');
   const [pwdLoading, setPwdLoading] = useState(false);
+  const [confirmAcc, setConfirmAcc] = useState<Account | null>(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
+  const [collectMsg, setCollectMsg] = useState('');
+  const [collecting, setCollecting] = useState(false);
+  const [clearMsg, setClearMsg] = useState('');
+  const [clearing, setClearing] = useState(false);
+
+  // 收录券码：拉取当前账号未过期「电影票兑换券」，写入 D:/巴蒂哥/出票助手/卷码收录/{phone}.txt
+  const collectVouchers = async (accPhone?: string) => {
+    const active = getActiveAccount();
+    const targetPhone = accPhone || active?.phone || '';
+    if (!targetPhone) {
+      setCollectMsg('⚠️ 当前账号无手机号，无法收录券码（需先用手机号登录该账号）');
+      return;
+    }
+    setCollecting(true);
+    setCollectMsg('');
+    try {
+      const resp = await api.getMemberVouchers(1, 1, 100);
+      if (!resp.success) {
+        setCollectMsg('拉取券列表失败：' + (resp.message || '未知错误'));
+        return;
+      }
+      const records: any[] = (resp.result as any)?.records || [];
+      const now = Date.now();
+      const valid = records.filter((v: any) => {
+        const vname = v.voucher_name || v.voucherName || '';
+        if (!vname.includes('电影票兑换券')) return false;
+        const end = v.sch_end_date || v.validEndTime || '';
+        if (end) {
+          const t = new Date(String(end).replace(' ', 'T')).getTime();
+          if (!isNaN(t) && t <= now) return false; // 过期不收录
+        }
+        return true;
+      });
+      if (valid.length === 0) {
+        setCollectMsg('✅ 没有需要收录的电影票兑换券（无未过期券）');
+        return;
+      }
+      const lines: string[] = [];
+      lines.push(`手机号：${targetPhone}`);
+      lines.push(`收录时间：${new Date().toLocaleString('zh-CN')}`);
+      lines.push(`收录数量：${valid.length} 张（电影票兑换券·未过期）`);
+      lines.push('─'.repeat(34));
+      valid.forEach((v: any) => {
+        lines.push(`券名：${v.voucher_name || v.voucherName || ''}`);
+        lines.push(`券号：${v.voucher_no || v.voucherNo || ''}`);
+        lines.push(`到期时间：${v.sch_end_date || v.validEndTime || '未知'}`);
+        lines.push('─'.repeat(34));
+      });
+      const content = lines.join('\n');
+      const result = await window.electronAPI?.saveVoucherRecord(targetPhone, content);
+      if (result?.success) {
+        setCollectMsg(`✅ 已收录 ${valid.length} 张券 → ${result.filePath}`);
+      } else {
+        setCollectMsg('写入失败：' + (result?.error || '未知错误'));
+      }
+    } catch (e: any) {
+      setCollectMsg('收录失败：' + e.message);
+    } finally {
+      setCollecting(false);
+    }
+  };
+
+  // 清理缓存 + 强制全量刷新（只刷新显示数据，不动 accounts.json）
+  const handleClearCache = async () => {
+    if (!confirm('确定清理缓存并强制全量刷新？\n\n仅清理页面显示数据（余额/券/订单等），已登录账号不受影响。')) return;
+    setClearing(true);
+    setClearMsg('');
+    try {
+      await refreshActiveAccount();
+      const active = getActiveAccount();
+      if (active?.phone) await collectVouchers(active.phone);
+      setClearMsg('✅ 缓存已清理，数据已刷新');
+    } catch (e: any) {
+      setClearMsg('刷新失败：' + e.message);
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const copyPhone = async (acc: Account) => {
     if (!acc.phone) return;
@@ -133,28 +216,96 @@ export default function Accounts() {
       return;
     }
     try {
-      setPhoneLoginMsg('正在登录...');
-      const resp = await api.phoneLogin(p, c);
-      if (resp.success && resp.result) {
-        const result = resp.result as any;
-        const loginToken = result.token || result.accessToken || result.xAccessToken || '';
-        const loginMemberId = result.id || result.memberId || '';
-        if (loginToken && loginMemberId) {
-          await addAccount(name.trim() || p, loginToken, loginMemberId);
-          setShowPhoneLogin(false);
-          setPhone('');
-          setCaptcha('');
-          setPhoneLoginMsg('');
+      const active = getActiveAccount();
+      if (!active?.token) {
+        setPhoneLoginMsg('⚠️ 请先添加一个已登录账号（换绑需要借用当前微信身份）');
+        return;
+      }
+      setPhoneLoginMsg('正在查询账号是否已注册...');
+      // 预检：手机号是否已注册
+      const qResp = await api.queryMemberByPhone(p, 1);
+      if (!qResp.success) {
+        setPhoneLoginMsg('查询账号失败：' + (qResp.message || '未知错误'));
+        return;
+      }
+      const qResult = qResp.result as any;
+      if (qResult == null) {
+        // 未注册 → 注册新用户
+        setPhoneLoginMsg('该手机号未注册，正在注册新用户...');
+        const regData: any = { phone: p, code: c, isWeChatPhone: 0 };
+        if (selectedCinemaId) regData.cinemaId = selectedCinemaId;
+        const regResp = await api.registerMember(regData);
+        if (!regResp.success || !regResp.result) {
+          setPhoneLoginMsg('注册失败：' + (regResp.message || '未知错误'));
           return;
         }
+        const regResult = regResp.result as any;
+        const newMemberId = regResult.member?.id || regResult.id || '';
+        if (!newMemberId) {
+          setPhoneLoginMsg('注册成功但未获取到会员 ID');
+          return;
+        }
+        // 确保当前微信 openId 绑定到新会员
+        await api.updateMemberOpenId(p);
+        await addAccount(name.trim() || p, active.token, String(newMemberId));
+        setShowPhoneLogin(false);
+        setPhone('');
+        setCaptcha('');
+        setPhoneLoginMsg('');
+        collectVouchers(p);
+        return;
       }
+      // 已注册 → 弹「使用原有账号」确认框
+      const info = qResult;
+      setConfirmAcc({
+        id: 'pending_' + p,
+        name: p,
+        token: active.token,
+        memberId: String(info.id || ''),
+        phone: p,
+        level: info.level,
+        levelDictText: info.level_dictText || info.levelDictText,
+        balance: info.balance,
+        score: info.score,
+        createdAt: '',
+        tokenValid: true,
+      } as any);
+      // 换绑警告：若当前账号无手机号，原账号换绑后无法通过微信登录
+      const noPhoneWarn = !active.phone
+        ? `⚠️ 当前账号「${active.name}」未绑定手机号，换绑后它将无法通过微信登录（数据仍在，但入口丢失）。`
+        : '';
       setPhoneLoginMsg(
-        '手机号验证码登录未返回可用 Token，可能后端仍需要微信 code 或使用了其他登录接口。' +
-          '建议：1) 在小程序里输入验证码登录；2) 点击「捕获 Token」抓取登录响应；' +
-          '3) 或把抓包得到的登录接口地址发给我。'
+        `检测到该手机号已注册（${info.level_dictText || info.levelDictText || '会员'}）` +
+          (noPhoneWarn ? '。' + noPhoneWarn : '') +
+          '。请确认是否使用原有账号：'
       );
     } catch (e: any) {
       setPhoneLoginMsg('登录失败：' + e.message);
+    }
+  };
+
+  // 确认「使用原有账号」→ 换绑 openId → 添加账号
+  const handleConfirmUseExisting = async () => {
+    if (!confirmAcc) return;
+    const p = confirmAcc.phone || '';
+    setConfirmLoading(true);
+    setPhoneLoginMsg('');
+    try {
+      const upResp = await api.updateMemberOpenId(p);
+      if (!upResp.success) {
+        setPhoneLoginMsg('换绑失败：' + (upResp.message || '未知错误'));
+        return;
+      }
+      await addAccount(name.trim() || p, confirmAcc.token, confirmAcc.memberId);
+      setConfirmAcc(null);
+      setShowPhoneLogin(false);
+      setPhone('');
+      setCaptcha('');
+      collectVouchers(p);
+    } catch (e: any) {
+      setPhoneLoginMsg('换绑失败：' + e.message);
+    } finally {
+      setConfirmLoading(false);
     }
   };
 
@@ -287,29 +438,53 @@ export default function Accounts() {
             </button>
           )}
           <button
-            onClick={() => handleOpenMiniProgram()}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-500 text-white rounded-lg hover:bg-green-600"
-            title="打开小程序首页"
+            onClick={handleClearCache}
+            disabled={clearing}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50"
+            title="清理页面显示缓存并强制全量刷新（不影响已登录账号）"
           >
-            <ExternalLink className="w-4 h-4" />
-            打开小程序
+            <RefreshCw className={`w-4 h-4 ${clearing ? 'animate-spin' : ''}`} />
+            {clearing ? '刷新中...' : '清理缓存'}
           </button>
           <button
-            onClick={() => handleOpenMiniProgram('pagesC/login/ph-login')}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-teal-500 text-white rounded-lg hover:bg-teal-600"
-            title="打开小程序手机验证码登录页"
+            onClick={() => collectVouchers()}
+            disabled={collecting}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50"
+            title="重新收录当前账号的电影票兑换券到 卷码收录 文件夹"
           >
-            <Smartphone className="w-4 h-4" />
-            打开登录页
+            <BookMarked className={`w-4 h-4 ${collecting ? 'animate-pulse' : ''}`} />
+            {collecting ? '收录中...' : '重新收录券码'}
           </button>
-          <button
-            onClick={() => handleOpenMiniProgram('pagesC/mine/order')}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"
-            title="打开小程序我的订单（可去支付）"
-          >
-            <CheckCircle className="w-4 h-4" />
-            打开订单页
-          </button>
+          {!HIDE_APP_BUTTONS && (
+            <button
+              onClick={() => handleOpenMiniProgram()}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-500 text-white rounded-lg hover:bg-green-600"
+              title="打开小程序首页"
+            >
+              <ExternalLink className="w-4 h-4" />
+              打开小程序
+            </button>
+          )}
+          {!HIDE_APP_BUTTONS && (
+            <button
+              onClick={() => handleOpenMiniProgram('pagesC/login/ph-login')}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-teal-500 text-white rounded-lg hover:bg-teal-600"
+              title="打开小程序手机验证码登录页"
+            >
+              <Smartphone className="w-4 h-4" />
+              打开登录页
+            </button>
+          )}
+          {!HIDE_APP_BUTTONS && (
+            <button
+              onClick={() => handleOpenMiniProgram('pagesC/mine/order')}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"
+              title="打开小程序我的订单（可去支付）"
+            >
+              <CheckCircle className="w-4 h-4" />
+              打开订单页
+            </button>
+          )}
           <button
             onClick={() => setShowPhoneLogin(!showPhoneLogin)}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600"
@@ -410,11 +585,10 @@ export default function Accounts() {
           </div>
           <div className="text-xs text-gray-400 bg-gray-50 p-2 rounded space-y-1">
             <p>💡 说明：</p>
-            <p>1. 输入手机号后点击「获取验证码」，系统会请求小程序发送短信</p>
-            <p>2. 如果后端支持手机号+验证码直接登录，会自动添加账号</p>
-            <p>3. 但小程序实际登录流程最后一步需要微信 wx.login()，桌面端无法完成，所以大概率登录失败</p>
-            <p>4. 加账号推荐用「捕获 Token」：先点「打开登录页」唤起小程序 → 点「捕获 Token」→ 在小程序里完成验证码登录</p>
-            <p>5. 若仍捕获不到，可用手机抓包（手机连电脑 WiFi 代理，代理填 电脑IP:8888），操作小程序后把请求发给我</p>
+            <p>1. 输入手机号 → 获取验证码（短信照常收到，验证码内容后端不校验，随便填也能过）</p>
+            <p>2. 系统先查询手机号：已注册 → 确认后换绑微信身份登录；未注册 → 自动注册新用户</p>
+            <p>3. 登录成功后自动收录该账号的「电影票兑换券」到 卷码收录 文件夹</p>
+            <p>4. ⚠️ 换绑会把当前微信身份切到该手机号账号；若当前账号没绑手机号，换绑后它将无法通过微信登录</p>
           </div>
         </div>
       )}
@@ -473,6 +647,22 @@ export default function Accounts() {
             <p>4. 系统会自动捕获登录 Token</p>
             <p>5. 或手动从抓包工具获取 Token 和 MemberId</p>
           </div>
+        </div>
+      )}
+
+      {/* 清理缓存 / 收录状态 */}
+      {(clearMsg || collectMsg) && (
+        <div className="space-y-2">
+          {clearMsg && (
+            <div className={`text-sm p-2.5 rounded ${clearMsg.includes('✅') ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
+              {clearMsg}
+            </div>
+          )}
+          {collectMsg && (
+            <div className={`text-sm p-2.5 rounded ${collectMsg.includes('✅') ? 'bg-green-50 text-green-700' : collectMsg.includes('⚠️') ? 'bg-orange-50 text-orange-700' : 'bg-yellow-50 text-yellow-700'}`}>
+              {collectMsg}
+            </div>
+          )}
         </div>
       )}
 
@@ -594,6 +784,40 @@ export default function Accounts() {
           ))
         )}
       </div>
+
+      {/* 使用原有账号 confirm modal */}
+      {confirmAcc && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setConfirmAcc(null)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-medium text-lg">使用原有账号</h3>
+            <p className="text-xs text-gray-400">
+              该手机号已注册会员，确认后将把当前微信身份换绑到以下账号：
+            </p>
+            <div className="bg-purple-50 rounded-lg p-3 space-y-1 text-sm">
+              <p>📱 手机号：{confirmAcc.phone}</p>
+              {confirmAcc.levelDictText && <p>👑 等级：{confirmAcc.levelDictText}</p>}
+              {confirmAcc.balance != null && <p>💰 余额：¥{Number(confirmAcc.balance).toFixed(2)}</p>}
+              {confirmAcc.score != null && <p>⭐ 积分：{confirmAcc.score}</p>}
+              <p className="text-xs text-gray-400">MemberId：{confirmAcc.memberId}</p>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={handleConfirmUseExisting}
+                disabled={confirmLoading}
+                className="flex-1 px-4 py-2 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:opacity-50"
+              >
+                {confirmLoading ? '换绑中...' : '确认使用原有账号'}
+              </button>
+              <button
+                onClick={() => setConfirmAcc(null)}
+                className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Reset password modal */}
       {pwdAccId && (

@@ -416,6 +416,20 @@ app.whenReady().then(() => {
     return mainWindow ? mainWindow.isAlwaysOnTop() : false;
   });
 
+  // Save voucher records to 卷码收录 folder (D:\巴蒂哥\出票助手\卷码收录\{phone}.txt)
+  ipcMain.handle('voucher:save', async (event, { phone, content }) => {
+    try {
+      if (!phone) return { success: false, error: '手机号为空' };
+      const dir = 'D:/巴蒂哥/出票助手/卷码收录';
+      fs.mkdirSync(dir, { recursive: true });
+      const filePath = path.join(dir, `${String(phone).trim()}.txt`);
+      fs.writeFileSync(filePath, String(content || ''), 'utf-8');
+      return { success: true, filePath };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
   // Save base64 image to disk (for generated schedule poster)
   ipcMain.handle('image:save', async (event, { dataUrl, defaultName }) => {
     try {
