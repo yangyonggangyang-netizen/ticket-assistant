@@ -1,0 +1,224 @@
+import { useEffect, useState } from 'react';
+import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User } from 'lucide-react';
+import { useStore } from '../store/useStore';
+import { api } from '../api/client';
+import type { Page } from '../App';
+
+export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
+  const { accounts, activeAccountId, cinemas, selectedCinemaId, refreshActiveAccount, loading } = useStore();
+  const account = accounts.find((a) => a.id === activeAccountId);
+  const [movies, setMovies] = useState<any[]>([]);
+  const [movieCount, setMovieCount] = useState(0);
+  const [loadingMovies, setLoadingMovies] = useState(false);
+
+  useEffect(() => {
+    if (selectedCinemaId) {
+      loadMovies();
+    }
+  }, [selectedCinemaId]);
+
+  const loadMovies = async () => {
+    setLoadingMovies(true);
+    try {
+      const resp = await api.getNowPlayMovies(selectedCinemaId, 1, 6);
+      if (resp.success && resp.result) {
+        setMovies(resp.result.records || []);
+        setMovieCount(resp.result.total || 0);
+      }
+    } catch (e) {
+      console.error('Failed to load movies:', e);
+    }
+    setLoadingMovies(false);
+  };
+
+  if (!account) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <AlertCircle className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+          <p className="text-gray-500 mb-3">请先添加账号</p>
+          <button
+            onClick={() => setPage('accounts')}
+            className="px-4 py-2 bg-pink-500 text-white rounded-lg hover:bg-pink-600"
+          >
+            添加账号
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">控制台</h2>
+          <p className="text-sm text-gray-500">大埔嘉逸影联 · 影院出票管理系统</p>
+        </div>
+        <button
+          onClick={refreshActiveAccount}
+          disabled={loading}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm bg-white border rounded-lg hover:bg-gray-50 disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          刷新
+        </button>
+      </div>
+
+      {/* Token status warning */}
+      {account.tokenValid === false && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-red-500" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-red-800">Token 已失效</p>
+            <p className="text-xs text-red-600">请重新捕获 Token 或切换账号</p>
+          </div>
+          <button
+            onClick={() => setPage('accounts')}
+            className="px-3 py-1.5 text-xs bg-red-500 text-white rounded hover:bg-red-600"
+          >
+            重新登录
+          </button>
+        </div>
+      )}
+
+      {/* Stats cards */}
+      <div className="grid grid-cols-4 gap-4">
+        <StatCard
+          icon={Wallet}
+          label="余额"
+          value={account.balance != null ? `¥${Number(account.balance).toFixed(2)}` : '--'}
+          color="bg-blue-50 text-blue-600"
+        />
+        <StatCard
+          icon={Star}
+          label="积分"
+          value={account.score != null ? String(account.score) : '--'}
+          color="bg-yellow-50 text-yellow-600"
+        />
+        <StatCard
+          icon={Film}
+          label="在映电影"
+          value={String(movieCount)}
+          color="bg-purple-50 text-purple-600"
+        />
+        <StatCard
+          icon={Ticket}
+          label="会员等级"
+          value={account.levelDictText || account.level || '--'}
+          color="bg-pink-50 text-pink-600"
+        />
+      </div>
+
+      {/* Cinema selector */}
+      <div className="bg-white rounded-lg border p-4">
+        <h3 className="text-sm font-medium mb-3">影院选择</h3>
+        <div className="flex gap-2 flex-wrap">
+          {cinemas.map((c: any) => (
+            <button
+              key={c.id}
+              onClick={() => useStore.getState().setSelectedCinema(c.id)}
+              className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                selectedCinemaId === c.id
+                  ? 'bg-pink-500 text-white border-pink-500'
+                  : 'bg-white text-gray-600 border-gray-300 hover:border-pink-300'
+              }`}
+            >
+              {c.cinemaName}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Movies list */}
+      <div className="bg-white rounded-lg border">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h3 className="text-sm font-medium">正在上映</h3>
+          <button
+            onClick={() => setPage('movies')}
+            className="text-xs text-pink-500 hover:text-pink-600"
+          >
+            查看全部 →
+          </button>
+        </div>
+        <div className="p-4">
+          {loadingMovies ? (
+            <p className="text-sm text-gray-400">加载中...</p>
+          ) : movies.length === 0 ? (
+            <p className="text-sm text-gray-400">暂无在映电影</p>
+          ) : (
+            <div className="grid grid-cols-3 gap-3">
+              {movies.slice(0, 6).map((m: any, i: number) => (
+                <div key={i} className="border rounded-lg p-3 hover:shadow-sm">
+                  <p className="font-medium text-sm truncate">
+                    {m.name || m.filmName || `电影 ${m.code || i}`}
+                  </p>
+                  <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
+                    {m.edition && <span>{m.edition}</span>}
+                    {m.filmSchedule?.language && <span>{m.filmSchedule.language}</span>}
+                    {m.filmSchedule?.startTime && (
+                      <span className="text-pink-500">
+                        {m.filmSchedule.startTime.substring(5, 16)}
+                      </span>
+                    )}
+                  </div>
+                  {m.originalPrice != null && (
+                    <p className="text-xs text-gray-400 mt-1">原价: ¥{m.originalPrice}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Quick actions */}
+      <div className="grid grid-cols-3 gap-4">
+        <QuickAction
+          icon={Film}
+          label="选座购票"
+          desc="查看排期并选座"
+          onClick={() => setPage('schedules')}
+        />
+        <QuickAction
+          icon={Ticket}
+          label="我的订单"
+          desc="查看和管理订单"
+          onClick={() => setPage('orders')}
+        />
+        <QuickAction
+          icon={User}
+          label="会员中心"
+          desc="余额积分卡券"
+          onClick={() => setPage('member')}
+        />
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ icon: Icon, label, value, color }: any) {
+  return (
+    <div className="bg-white rounded-lg border p-4">
+      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${color}`}>
+        <Icon className="w-5 h-5" />
+      </div>
+      <p className="text-xs text-gray-500 mt-3">{label}</p>
+      <p className="text-lg font-bold mt-1">{value}</p>
+    </div>
+  );
+}
+
+function QuickAction({ icon: Icon, label, desc, onClick }: any) {
+  return (
+    <button
+      onClick={onClick}
+      className="bg-white rounded-lg border p-4 text-left hover:shadow-md transition-shadow"
+    >
+      <Icon className="w-6 h-6 text-pink-500" />
+      <p className="font-medium text-sm mt-2">{label}</p>
+      <p className="text-xs text-gray-400 mt-1">{desc}</p>
+    </button>
+  );
+}
