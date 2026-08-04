@@ -1,4 +1,5 @@
-import { Film, Clapperboard, Calendar, Ticket, User, Users, ShoppingCart } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Film, Clapperboard, Calendar, Ticket, User, Users, ShoppingCart, Pin, PinOff } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import type { Page } from '../App';
 import UpdateChecker from './UpdateChecker';
@@ -16,6 +17,25 @@ const menuItems: { id: Page; label: string; icon: any }[] = [
 export default function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
   const { accounts, activeAccountId, switchAccount } = useStore();
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
+
+  useEffect(() => {
+    window.electronAPI?.getAlwaysOnTop?.().then((v) => setAlwaysOnTop(!!v)).catch(() => {});
+  }, []);
+
+  const toggleAlwaysOnTop = async () => {
+    const next = !alwaysOnTop;
+    try {
+      const result = await window.electronAPI?.setAlwaysOnTop?.(next);
+      if (result?.success) {
+        setAlwaysOnTop(next);
+      } else if (result?.error) {
+        alert('设置失败：' + result.error);
+      }
+    } catch (e: any) {
+      alert('设置失败：' + e.message);
+    }
+  };
 
   return (
     <aside className="w-56 bg-gray-900 text-white flex flex-col">
@@ -79,6 +99,18 @@ export default function Sidebar({ page, setPage }: { page: Page; setPage: (p: Pa
 
       {/* Footer */}
       <div className="p-3 border-t border-gray-700 space-y-2">
+        <button
+          onClick={toggleAlwaysOnTop}
+          title={alwaysOnTop ? '取消窗口置顶' : '窗口置顶（始终显示在最前面）'}
+          className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs rounded-lg transition-colors ${
+            alwaysOnTop
+              ? 'bg-pink-600 text-white'
+              : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+          }`}
+        >
+          {alwaysOnTop ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
+          {alwaysOnTop ? '已置顶（点击取消）' : '窗口置顶'}
+        </button>
         <UpdateChecker />
         <p className="text-xs text-gray-500">merchant: 860753002</p>
       </div>

@@ -1,8 +1,12 @@
 import { useState } from 'react';
-import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone } from 'lucide-react';
+import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api, localApi } from '../api/client';
 import type { Account } from '../types';
+
+const WECHAT_APP_ID = 'wx4fd7f63cb29a8891';
+const launchApplet = (path?: string) =>
+  'weixin://launchapplet/?app_id=' + WECHAT_APP_ID + (path ? '&path=' + path : '');
 
 export default function Accounts() {
   const { accounts, activeAccountId, addAccount, removeAccount, switchAccount, updateAccount, saveToStorage, loading, error } = useStore();
@@ -20,6 +24,54 @@ export default function Accounts() {
   const [captureMsg, setCaptureMsg] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [copiedPhoneId, setCopiedPhoneId] = useState<string | null>(null);
+  const [pwdAccId, setPwdAccId] = useState<string | null>(null);
+  const [pwdValue, setPwdValue] = useState('');
+  const [pwdConfirm, setPwdConfirm] = useState('');
+  const [pwdMsg, setPwdMsg] = useState('');
+  const [pwdLoading, setPwdLoading] = useState(false);
+
+  const copyPhone = async (acc: Account) => {
+    if (!acc.phone) return;
+    try {
+      await navigator.clipboard.writeText(acc.phone);
+      setCopiedPhoneId(acc.id);
+      setTimeout(() => setCopiedPhoneId(null), 1500);
+    } catch (e) {
+      alert('复制失败');
+    }
+  };
+
+  const handleResetPwd = async () => {
+    if (!/^\d{6}$/.test(pwdValue)) {
+      setPwdMsg('密码应为 6 位数字');
+      return;
+    }
+    if (pwdValue !== pwdConfirm) {
+      setPwdMsg('两次输入的密码不一致');
+      return;
+    }
+    setPwdLoading(true);
+    setPwdMsg('');
+    try {
+      const resp = await api.wxResetPassword(pwdValue);
+      if (resp.success) {
+        setPwdMsg('✅ 重置成功');
+        setTimeout(() => {
+          setPwdAccId(null);
+          setPwdValue('');
+          setPwdConfirm('');
+          setPwdMsg('');
+        }, 1500);
+      } else {
+        setPwdMsg('重置失败：' + (resp.message || '未知错误'));
+      }
+    } catch (e: any) {
+      setPwdMsg('重置失败：' + e.message);
+    } finally {
+      setPwdLoading(false);
+    }
+  };
 
   const handleAdd = async () => {
     if (!token.trim() || !memberId.trim()) {
@@ -84,7 +136,7 @@ export default function Accounts() {
       setPhoneLoginMsg('正在登录...');
       const resp = await api.phoneLogin(p, c);
       if (resp.success && resp.result) {
-        const result = resp.result;
+        const result = resp.result as any;
         const loginToken = result.token || result.accessToken || result.xAccessToken || '';
         const loginMemberId = result.id || result.memberId || '';
         if (loginToken && loginMemberId) {
@@ -159,12 +211,21 @@ export default function Accounts() {
     setCaptureMsg('');
   };
 
-  const handleOpenMiniProgram = async () => {
+  const handleOpenMiniProgram = async (path?: string) => {
+    const url = launchApplet(path);
     try {
       if (window.electronAPI?.openExternal) {
-        const result = await window.electronAPI.openExternal('weixin://launchapplet/?app_id=wx4fd7f63cb29a8891');
+        const result = await window.electronAPI.openExternal(url);
         if (!result.success) {
-          alert('打开小程序失败：' + (result.error || '未知错误'));
+          // fallback: open desktop shortcut
+          if (window.electronAPI?.openPath) {
+            const r2 = await window.electronAPI.openPath();
+            if (!r2.success) {
+              alert('打开小程序失败：' + (result.error || r2.error || '未知错误'));
+            }
+          } else {
+            alert('打开小程序失败：' + (result.error || '未知错误'));
+          }
         }
       } else if (window.electronAPI?.openPath) {
         const result = await window.electronAPI.openPath();
@@ -172,7 +233,7 @@ export default function Accounts() {
           alert('打开小程序失败：' + (result.error || '未知错误'));
         }
       } else {
-        window.open('weixin://launchapplet/?app_id=wx4fd7f63cb29a8891', '_blank');
+        window.open(url, '_blank');
       }
     } catch (e: any) {
       alert('打开小程序失败：' + e.message);
@@ -226,11 +287,28 @@ export default function Accounts() {
             </button>
           )}
           <button
-            onClick={handleOpenMiniProgram}
+            onClick={() => handleOpenMiniProgram()}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-500 text-white rounded-lg hover:bg-green-600"
+            title="打开小程序首页"
           >
             <ExternalLink className="w-4 h-4" />
             打开小程序
+          </button>
+          <button
+            onClick={() => handleOpenMiniProgram('pagesC/login/ph-login')}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-teal-500 text-white rounded-lg hover:bg-teal-600"
+            title="打开小程序手机验证码登录页"
+          >
+            <Smartphone className="w-4 h-4" />
+            打开登录页
+          </button>
+          <button
+            onClick={() => handleOpenMiniProgram('pagesC/mine/order')}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"
+            title="打开小程序我的订单（可去支付）"
+          >
+            <CheckCircle className="w-4 h-4" />
+            打开订单页
           </button>
           <button
             onClick={() => setShowPhoneLogin(!showPhoneLogin)}
@@ -334,7 +412,9 @@ export default function Accounts() {
             <p>💡 说明：</p>
             <p>1. 输入手机号后点击「获取验证码」，系统会请求小程序发送短信</p>
             <p>2. 如果后端支持手机号+验证码直接登录，会自动添加账号</p>
-            <p>3. 若登录失败，请在小程序里完成登录后点击「捕获 Token」抓取 Token</p>
+            <p>3. 但小程序实际登录流程最后一步需要微信 wx.login()，桌面端无法完成，所以大概率登录失败</p>
+            <p>4. 加账号推荐用「捕获 Token」：先点「打开登录页」唤起小程序 → 点「捕获 Token」→ 在小程序里完成验证码登录</p>
+            <p>5. 若仍捕获不到，可用手机抓包（手机连电脑 WiFi 代理，代理填 电脑IP:8888），操作小程序后把请求发给我</p>
           </div>
         </div>
       )}
@@ -463,7 +543,20 @@ export default function Accounts() {
                   )}
                 </div>
                 <div className="flex items-center gap-4 mt-1 text-xs text-gray-500">
-                  {acc.phone && <span>📱 {acc.phone}</span>}
+                  {acc.phone && (
+                    <button
+                      onClick={() => copyPhone(acc)}
+                      className="flex items-center gap-1 hover:text-pink-500"
+                      title="点击复制手机号"
+                    >
+                      📱 {acc.phone}
+                      {copiedPhoneId === acc.id ? (
+                        <Check className="w-3 h-3 text-green-500" />
+                      ) : (
+                        <Copy className="w-3 h-3 opacity-60" />
+                      )}
+                    </button>
+                  )}
                   {acc.levelDictText && <span>👑 {acc.levelDictText}</span>}
                   {acc.balance != null && <span>💰 ¥{Number(acc.balance).toFixed(2)}</span>}
                   {acc.score != null && <span>⭐ {acc.score}</span>}
@@ -479,6 +572,14 @@ export default function Accounts() {
                   </button>
                 )}
                 <button
+                  onClick={() => setPwdAccId(acc.id)}
+                  title="重置当前账号的消费密码（6 位数字）"
+                  className="flex items-center gap-1 px-2 py-1.5 text-xs bg-amber-50 text-amber-600 border border-amber-200 rounded-lg hover:bg-amber-100"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  重置密码
+                </button>
+                <button
                   onClick={() => {
                     if (confirm(`确定删除账号「${acc.name}」？`)) {
                       removeAccount(acc.id);
@@ -493,6 +594,62 @@ export default function Accounts() {
           ))
         )}
       </div>
+
+      {/* Reset password modal */}
+      {pwdAccId && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setPwdAccId(null)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-medium text-lg">重置消费密码</h3>
+            <p className="text-xs text-gray-400">
+              将重置当前激活账号「{accounts.find((a) => a.id === pwdAccId)?.name}」的消费密码。
+              若目标账号不是当前账号，请先切换。
+            </p>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">新密码（6 位数字）</label>
+              <input
+                type="password"
+                value={pwdValue}
+                onChange={(e) => setPwdValue(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="请输入 6 位数字"
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-amber-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">确认新密码</label>
+              <input
+                type="password"
+                value={pwdConfirm}
+                onChange={(e) => setPwdConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleResetPwd();
+                }}
+                placeholder="再次输入新密码"
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-amber-400"
+              />
+            </div>
+            {pwdMsg && (
+              <div className={`text-sm p-2 rounded ${pwdMsg.includes('✅') ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
+                {pwdMsg}
+              </div>
+            )}
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={handleResetPwd}
+                disabled={pwdLoading}
+                className="flex-1 px-4 py-2 text-sm bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50"
+              >
+                {pwdLoading ? '提交中...' : '确认重置'}
+              </button>
+              <button
+                onClick={() => setPwdAccId(null)}
+                className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

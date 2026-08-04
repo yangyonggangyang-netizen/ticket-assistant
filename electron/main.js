@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, clipboard, nativeImage, screen, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, session, clipboard, nativeImage, screen, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile, exec } = require('child_process');
@@ -104,7 +104,7 @@ function setSystemProxy(enable) {
 
 // Ensure capture script exists
 const CAPTURE_SCRIPT_CONTENT = `#!/usr/bin/env python3
-"""Capture token from yq30 API login response."""
+"""Capture token / member info from yq30 API responses (login, register, phone number)."""
 import os
 import json
 
@@ -119,26 +119,119 @@ class TokenCapture:
         with open(self.output_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+    def _try_parse(self, text):
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
     def response(self, flow):
-        if '/api/member/login' in flow.request.url:
-            try:
-                body = json.loads(flow.response.text)
-                if body.get('success') and body.get('result'):
-                    result = body['result']
-                    data = {
-                        'token': result.get('token', ''),
-                        'memberId': result.get('id', ''),
-                        'phone': result.get('phone', ''),
-                        'level': result.get('level', ''),
-                        'cinemaId': result.get('cinemaId', ''),
+        url = flow.request.url or ''
+        try:
+            body = self._try_parse(flow.response.text)
+        except Exception:
+            body = None
+
+        # 1) Login response: /api/member/login -> token + id + phone
+        if '/api/member/login' in url:
+            if body and isinstance(body, dict) and body.get('success') and body.get('result'):
+                r = body['result'] or {}
+                if r.get('token'):
+                    self.save({
+                        'token': r.get('token', ''),
+                        'memberId': r.get('id') or r.get('memberId') or '',
+                        'phone': r.get('phone', ''),
+                        'level': r.get('level', ''),
+                        'cinemaId': r.get('cinemaId', ''),
+                        'source': 'login',
                         'done': True,
-                    }
-                    self.save(data)
+                    })
                     self.captured = True
-                    print(f'[CAPTURED] Token: {data["token"][:20]}... MemberId: {data["memberId"]}')
+                    print(f'[CAPTURED] login token: {r.get("token", "")[:20]}... memberId: {r.get("id", "")}')
                     print('[DONE] Token captured successfully!')
-            except Exception as e:
-                print(f'[ERROR] Failed to parse login response: {e}')
+                    return
+
+        # 2) Register response: /api/member/register -> member id + phone (token comes right after in login)
+        if '/api/member/register' in url:
+            if body and isinstance(body, dict) and body.get('success') and body.get('result'):
+                r = body.get('result') or {}
+                m = r.get('member') or {}
+                if m.get('id') or m.get('phone'):
+                    self.save({
+                        'token': r.get('token') or m.get('token') or '',
+                        'memberId': str(m.get('id') or r.get('id') or ''),
+                        'phone': m.get('phone') or r.get('phone') or '',
+                        'level': m.get('level', ''),
+                        'cinemaId': m.get('cinemaId', ''),
+                        'source': 'register',
+                        'done': bool(r.get('token') or m.get('token')),
+                    })
+                    self.captured = True
+                    print(f'[CAPTURED] register: phone={m.get("phone", "")} memberId={m.get("id", "")}')
+                    if self._last_saved_done():
+                        print('[DONE] Token captured successfully!')
+                    return
+
+        # 3) Phone number from WeChat one-click: api/member/getPhoneNumber
+        if 'getPhoneNumber' in url:
+            if body and isinstance(body, dict) and body.get('success') and body.get('result'):
+                phone = (body.get('result') or {}).get('phoneNumber', '')
+                if phone:
+                    self.save({
+                        'phone': phone,
+                        'source': 'getPhoneNumber',
+                        'done': False,
+                    })
+                    self.captured = True
+                    print(f'[CAPTURED] phone: {phone}')
+                    return
+
+        # 4) queryByPhone: member exists?
+        if 'queryByPhone' in url:
+            if body and isinstance(body, dict) and body.get('success'):
+                self.save({
+                    'queryByPhoneResult': body.get('result'),
+                    'source': 'queryByPhone',
+                    'done': False,
+                })
+                print(f'[CAPTURED] queryByPhone: {json.dumps(body.get("result"), ensure_ascii=False)[:100]}')
+                return
+
+        # 5) updateMemberOpenId: old member binds wechat
+        if 'updateMemberOpenId' in url:
+            if body and isinstance(body, dict) and body.get('success'):
+                self.save({'source': 'updateMemberOpenId', 'done': False})
+                print('[CAPTURED] updateMemberOpenId success')
+                return
+
+        # 6) Any JSON response that contains a non-empty token field
+        if body and isinstance(body, dict):
+            result = body.get('result')
+            token = None
+            if isinstance(result, dict):
+                token = result.get('token') or result.get('accessToken')
+            elif isinstance(result, str):
+                pass
+            if token:
+                memberId = result.get('id') or result.get('memberId') or '' if isinstance(result, dict) else ''
+                self.save({
+                    'token': token,
+                    'memberId': memberId,
+                    'phone': result.get('phone', '') if isinstance(result, dict) else '',
+                    'source': url.split('/')[-1],
+                    'done': True,
+                })
+                self.captured = True
+                print(f'[CAPTURED] token from {url}')
+                print('[DONE] Token captured successfully!')
+
+    def _last_saved_done(self):
+        try:
+            if os.path.exists(self.output_file):
+                return json.load(open(self.output_file, encoding='utf-8')).get('done', False)
+        except Exception:
+            pass
+        return False
 
 addons = [TokenCapture(output_file)]
 `;
@@ -146,7 +239,7 @@ addons = [TokenCapture(output_file)]
 if (!fs.existsSync(RUNTIME_DIR)) {
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
 }
-if (!fs.existsSync(CAPTURE_SCRIPT)) {
+if (!fs.existsSync(CAPTURE_SCRIPT) || fs.readFileSync(CAPTURE_SCRIPT, 'utf-8') !== CAPTURE_SCRIPT_CONTENT) {
   fs.writeFileSync(CAPTURE_SCRIPT, CAPTURE_SCRIPT_CONTENT, 'utf-8');
 }
 
@@ -301,6 +394,56 @@ app.whenReady().then(() => {
   ipcMain.handle('app:openExternal', async (event, url) => {
     try {
       await shell.openExternal(url);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
+  // Window always-on-top
+  ipcMain.handle('window:setAlwaysOnTop', (event, flag) => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setAlwaysOnTop(!!flag);
+        return { success: true, alwaysOnTop: !!flag };
+      }
+      return { success: false, error: '主窗口不存在' };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+  ipcMain.handle('window:getAlwaysOnTop', () => {
+    return mainWindow ? mainWindow.isAlwaysOnTop() : false;
+  });
+
+  // Save base64 image to disk (for generated schedule poster)
+  ipcMain.handle('image:save', async (event, { dataUrl, defaultName }) => {
+    try {
+      const base64 = String(dataUrl || '').replace(/^data:image\/\w+;base64,/, '');
+      if (!base64) return { success: false, error: '图片数据为空' };
+      const buffer = Buffer.from(base64, 'base64');
+      const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: '保存图片',
+        defaultPath: defaultName || '排期图.png',
+        filters: [{ name: 'PNG 图片', extensions: ['png'] }],
+      });
+      if (canceled || !filePath) return { success: false, canceled: true };
+      fs.writeFileSync(filePath, buffer);
+      return { success: true, filePath };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
+  // Copy base64 image to clipboard
+  ipcMain.handle('image:copy', async (event, dataUrl) => {
+    try {
+      const base64 = String(dataUrl || '').replace(/^data:image\/\w+;base64,/, '');
+      if (!base64) return { success: false, error: '图片数据为空' };
+      const buffer = Buffer.from(base64, 'base64');
+      const img = nativeImage.createFromBuffer(buffer);
+      if (img.isEmpty()) return { success: false, error: '图片解析失败' };
+      clipboard.writeImage(img);
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message || String(e) };
