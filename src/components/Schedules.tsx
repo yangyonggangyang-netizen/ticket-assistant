@@ -22,6 +22,8 @@ import {
   CheckCircle,
   AlertCircle,
   Copy,
+  ImageDown,
+  Save,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useStore } from '../store/useStore';
@@ -68,6 +70,213 @@ function dateLabel(dateStr: string): { text: string; colorClass: string } {
 const SEAT_SIZE = 28;
 const SEAT_GAP = 6;
 const ROW_LABEL_WIDTH = 40;
+
+// ===== Schedule poster generation (canvas) =====
+function formatTime(dateInput: string | Date | number): string {
+  const d = typeof dateInput === 'string' ? new Date(dateInput.replace(/-/g, '/')) : new Date(dateInput);
+  if (isNaN(d.getTime())) return '--:--';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('load failed'));
+    img.src = url;
+  });
+}
+
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function truncateText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxWidth) {
+    t = t.slice(0, -1);
+  }
+  return t + '…';
+}
+
+async function drawSchedulePoster(groups: FilmGroup[], cinemaName: string): Promise<string> {
+  const W = 820;
+  const padX = 26;
+  const posterW = 92;
+  const posterH = 126;
+  const headerH = 96;
+  const footerH = 34;
+  const chipW = 96;
+  const chipH = 26;
+  const chipGap = 8;
+
+  // 估算高度
+  let bodyH = 0;
+  for (const g of groups) {
+    const byDate = new Map<string, Schedule[]>();
+    g.schedules.forEach((s) => {
+      const d = getDateStr(s.startTime || '');
+      if (!byDate.has(d)) byDate.set(d, []);
+      byDate.get(d)!.push(s);
+    });
+    const dateGroups = Array.from(byDate.entries()).sort(([a], [b]) => a.localeCompare(b));
+    let rows = 0;
+    dateGroups.forEach(([, list]) => {
+      const maxPerRow = Math.floor((W - padX - posterW - 16 - padX) / (chipW + chipGap));
+      rows += Math.max(1, Math.ceil(list.length / maxPerRow));
+    });
+    bodyH += 12 + posterH + 4 + rows * 34;
+  }
+  const H = headerH + bodyH + footerH;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+
+  // 背景渐变
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#2b2148');
+  bg.addColorStop(1, '#12101f');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 顶部装饰条
+  ctx.fillStyle = '#ea68a2';
+  ctx.fillRect(0, 0, W, 5);
+
+  // Header
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
+  ctx.fillText(cinemaName, padX, 46);
+  ctx.fillStyle = '#b9b1dd';
+  ctx.font = '14px "Microsoft YaHei", sans-serif';
+  const now = new Date();
+  const week = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
+  ctx.fillText(
+    `排期一览 · ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${week}`,
+    padX,
+    72
+  );
+  ctx.strokeStyle = 'rgba(234,104,162,0.45)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padX, 88);
+  ctx.lineTo(W - padX, 88);
+  ctx.stroke();
+
+  let y = headerH;
+  for (const g of groups) {
+    // 海报
+    let hasPoster = false;
+    if (g.poster) {
+      try {
+        const img = await loadImage(POSTER_PREFIX + g.poster);
+        ctx.save();
+        roundRectPath(ctx, padX, y, posterW, posterH, 8);
+        ctx.clip();
+        ctx.drawImage(img, padX, y, posterW, posterH);
+        ctx.restore();
+        hasPoster = true;
+      } catch (e) {
+        hasPoster = false;
+      }
+    }
+    if (!hasPoster) {
+      ctx.fillStyle = '#352b55';
+      roundRectPath(ctx, padX, y, posterW, posterH, 8);
+      ctx.fill();
+      ctx.fillStyle = '#776da3';
+      ctx.font = '12px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('暂无海报', padX + posterW / 2, y + posterH / 2);
+      ctx.textAlign = 'left';
+    }
+
+    const tx = padX + posterW + 18;
+    const rightEdge = W - padX;
+
+    // 片名 + 主演
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 21px "Microsoft YaHei", sans-serif';
+    ctx.fillText(truncateText(ctx, g.filmName, rightEdge - tx - 20), tx, y + 26);
+    if (g.actor) {
+      ctx.fillStyle = '#b3aad6';
+      ctx.font = '12.5px "Microsoft YaHei", sans-serif';
+      ctx.fillText(truncateText(ctx, '主演：' + g.actor, rightEdge - tx - 10), tx, y + 47);
+    }
+
+    // 按日期分组的场次 chips
+    const byDate = new Map<string, Schedule[]>();
+    g.schedules.forEach((s) => {
+      const d = getDateStr(s.startTime || '');
+      if (!byDate.has(d)) byDate.set(d, []);
+      byDate.get(d)!.push(s);
+    });
+    const dateGroups = Array.from(byDate.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+    let yy = y + 62;
+    const maxPerRow = Math.floor((rightEdge - tx) / (chipW + chipGap));
+    for (const [dateStr, list] of dateGroups) {
+      const label = dateLabel(dateStr);
+      const dateChipColor = label.text.includes('今日')
+        ? '#ea68a2'
+        : label.text.includes('明日')
+        ? '#4f7fe8'
+        : '#3d345f';
+      const dateChipW = 14 + ctx.measureText(label.text).width + 16;
+      ctx.fillStyle = dateChipColor;
+      roundRectPath(ctx, tx, yy - 13, dateChipW, 20, 10);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '12px "Microsoft YaHei", sans-serif';
+      ctx.fillText(label.text, tx + 7, yy);
+
+      let cx = tx + dateChipW + 14;
+      let rowY = yy;
+      list.forEach((s) => {
+        if (cx + chipW > rightEdge + 4) {
+          cx = tx;
+          rowY += 34;
+        }
+        const timeText = formatTime(s.startTime || '');
+        ctx.fillStyle = '#2f2650';
+        roundRectPath(ctx, cx, rowY - 17, chipW, chipH, 13);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(234,104,162,0.35)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = '#eae6f8';
+        ctx.font = '13px "Microsoft YaHei", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(timeText, cx + chipW / 2, rowY);
+        ctx.textAlign = 'left';
+        cx += chipW + chipGap;
+      });
+      yy = rowY + 38;
+    }
+
+    y = yy + 10;
+  }
+
+  // Footer
+  ctx.fillStyle = 'rgba(255,255,255,0.28)';
+  ctx.font = '12px "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('影联出票助手 · 一键生成', W / 2, H - 12);
+
+  return canvas.toDataURL('image/png');
+}
 
 interface FilmGroup {
   filmCode: string;
@@ -118,12 +327,58 @@ export default function Schedules() {
     loading: boolean;
     error?: string;
   } | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [posterPreview, setPosterPreview] = useState<string | null>(null);
 
   const cinema = cinemas.find((c: Cinema) => c.id === selectedCinemaId);
 
   const showToast = (message: string) => {
     setToast({ message, visible: true });
     setTimeout(() => setToast((t) => ({ ...t, visible: false })), 2000);
+  };
+
+  const generatePoster = async () => {
+    if (filmGroups.length === 0) {
+      showToast('暂无排期数据');
+      return;
+    }
+    setGenerating(true);
+    try {
+      const dataUrl = await drawSchedulePoster(filmGroups, cinema?.cinemaName || '大埔嘉逸影联');
+      setPosterPreview(dataUrl);
+    } catch (e: any) {
+      showToast('生成失败：' + e.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const savePoster = async () => {
+    if (!posterPreview) return;
+    try {
+      const result = await window.electronAPI?.saveImage?.(posterPreview, `${cinema?.cinemaName || '排期'}.png`);
+      if (result?.success) {
+        showToast('已保存：' + (result.filePath || ''));
+      } else if (result && !result.canceled) {
+        showToast('保存失败：' + (result.error || '未知错误'));
+      }
+    } catch (e: any) {
+      showToast('保存失败：' + e.message);
+    }
+  };
+
+  const copyPoster = async () => {
+    if (!posterPreview) return;
+    try {
+      const result = await window.electronAPI?.copyImage?.(posterPreview);
+      if (result?.success) {
+        showToast('已复制到剪贴板，可直接粘贴');
+      } else {
+        showToast('复制失败：' + (result?.error || '未知错误'));
+      }
+    } catch (e: any) {
+      showToast('复制失败：' + e.message);
+    }
   };
 
   const loadData = async () => {
@@ -296,6 +551,19 @@ export default function Schedules() {
             onChange={(id) => setSelectedCinema(id)}
           />
           <button
+            onClick={generatePoster}
+            disabled={generating}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gradient-to-r from-pink-500 to-purple-500 text-white rounded-lg hover:opacity-90 disabled:opacity-50"
+            title="生成排期宣传图（可保存/复制）"
+          >
+            {generating ? (
+              <Loader className="w-4 h-4 animate-spin" />
+            ) : (
+              <ImageDown className="w-4 h-4" />
+            )}
+            生成排期图
+          </button>
+          <button
             onClick={captureSchedules}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-white border rounded-lg hover:bg-gray-50"
             title="复制所有排期截图到剪贴板"
@@ -340,6 +608,54 @@ export default function Schedules() {
           onRefresh={() => openSeat(seatModal.schedule)}
           refreshing={seatModal.loading}
         />
+      )}
+
+      {/* Poster preview modal */}
+      {posterPreview && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          onClick={() => setPosterPreview(null)}
+        >
+          <div
+            className="bg-white rounded-xl p-4 max-w-[92vw] max-h-[92vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold">排期图预览</h3>
+              <button
+                onClick={() => setPosterPreview(null)}
+                className="p-1.5 text-gray-400 hover:bg-gray-100 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="overflow-auto flex-1 rounded-lg bg-gray-100 p-2">
+              <img src={posterPreview} alt="排期图" className="max-w-full" />
+            </div>
+            <div className="flex gap-2 mt-3 justify-center">
+              <button
+                onClick={savePoster}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm bg-pink-500 text-white rounded-lg hover:bg-pink-600"
+              >
+                <Save className="w-4 h-4" />
+                保存图片
+              </button>
+              <button
+                onClick={copyPoster}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+              >
+                <Copy className="w-4 h-4" />
+                复制到剪贴板
+              </button>
+              <button
+                onClick={() => setPosterPreview(null)}
+                className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Toast */}

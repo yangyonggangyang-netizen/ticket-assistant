@@ -435,6 +435,10 @@ declare global {
       captureRegion: (rect: { x: number; y: number; width: number; height: number }) => Promise<{ success: boolean; data?: string; error?: string }>;
       openPath: (filePath?: string) => Promise<{ success: boolean; error?: string }>;
       openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
+      setAlwaysOnTop: (flag: boolean) => Promise<{ success: boolean; alwaysOnTop?: boolean; error?: string }>;
+      getAlwaysOnTop: () => Promise<boolean>;
+      saveImage: (dataUrl: string, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+      copyImage: (dataUrl: string) => Promise<{ success: boolean; error?: string }>;
       checkForUpdates: () => Promise<{ success: boolean; info?: any; error?: string }>;
       downloadUpdate: () => Promise<{ success: boolean; error?: string }>;
       installUpdate: () => Promise<{ success: boolean; error?: string }>;
