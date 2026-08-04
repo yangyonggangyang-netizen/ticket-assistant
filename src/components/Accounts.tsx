@@ -76,6 +76,16 @@ export default function Accounts() {
       const info = mResp.success ? (mResp.result as any) : null;
       const balance = info?.balance ?? acc.balance ?? 0;
       const score = info?.score ?? acc.score ?? 0;
+      // 顺手刷新账号卡上的券数（全部未使用券数，不只是电影票兑换券）
+      if (info && mResp.success) {
+        updateAccount(acc.id, {
+          balance: info.balance ?? acc.balance,
+          score: info.score ?? acc.score,
+          voucherNum: info.voucherNum,
+          lastActiveAt: new Date().toISOString(),
+          tokenValid: true,
+        });
+      }
       const records: any[] = (vResp.success ? (vResp.result as any)?.records : []) || [];
       const now = Date.now();
       const valid = records.filter((v: any) => {
@@ -170,6 +180,7 @@ export default function Accounts() {
             balance: info.balance,
             score: info.score,
             growthNum: info.growthNum,
+            voucherNum: info.voucherNum,
             lastActiveAt: new Date().toISOString(),
             tokenValid: true,
           });
@@ -896,6 +907,7 @@ export default function Accounts() {
                   {acc.levelDictText && <span>👑 {acc.levelDictText}</span>}
                   {acc.balance != null && <span>💰 ¥{Number(acc.balance).toFixed(2)}</span>}
                   {acc.score != null && <span>⭐ {acc.score}</span>}
+                  {acc.voucherNum != null && <span>🎫 {acc.voucherNum} 张券</span>}
                 </div>
               </div>
               <div className="flex gap-2">

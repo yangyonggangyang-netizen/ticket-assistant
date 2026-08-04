@@ -27,6 +27,7 @@ export interface Account {
   cardNo?: string;
   wxName?: string;
   wxHeadPortrait?: string;
+  voucherNum?: number;
   createdAt: string;
   lastActiveAt?: string;
   tokenValid?: boolean;
