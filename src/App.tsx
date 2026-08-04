@@ -8,8 +8,9 @@ import Schedules from './components/Schedules';
 import OrderList from './components/OrderList';
 import MemberInfo from './components/MemberInfo';
 import Mall from './components/Mall';
+import Ledger from './components/Ledger';
 
-export type Page = 'dashboard' | 'movies' | 'schedules' | 'orders' | 'member' | 'mall' | 'accounts';
+export type Page = 'dashboard' | 'movies' | 'schedules' | 'orders' | 'member' | 'mall' | 'accounts' | 'ledger';
 
 export default function App() {
   const [page, setPage] = useState<Page>('dashboard');
@@ -35,6 +36,7 @@ export default function App() {
         {page === 'orders' && <OrderList />}
         {page === 'member' && <MemberInfo />}
         {page === 'mall' && <Mall />}
+        {page === 'ledger' && <Ledger />}
         {page === 'accounts' && <Accounts />}
       </main>
     </div>

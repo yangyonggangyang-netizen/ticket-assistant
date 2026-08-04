@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Film, Clapperboard, Calendar, Ticket, User, Users, ShoppingCart, Pin, PinOff } from 'lucide-react';
+import { Film, Calendar, Ticket, User, Users, ShoppingCart, Pin, PinOff, BookOpen } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import type { Page } from '../App';
 import UpdateChecker from './UpdateChecker';
 
 const menuItems: { id: Page; label: string; icon: any }[] = [
   { id: 'dashboard', label: '首页', icon: Film },
-  { id: 'movies', label: '电影', icon: Clapperboard },
-  { id: 'schedules', label: '排期/选座', icon: Calendar },
+  { id: 'schedules', label: '电影排期', icon: Calendar },
   { id: 'orders', label: '订单', icon: Ticket },
-  { id: 'member', label: '会员信息', icon: User },
   { id: 'mall', label: '商城', icon: ShoppingCart },
+  { id: 'ledger', label: '记账日历', icon: BookOpen },
+  { id: 'member', label: '会员信息', icon: User },
   { id: 'accounts', label: '账号管理', icon: Users },
 ];
 
