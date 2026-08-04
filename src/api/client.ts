@@ -144,6 +144,49 @@ function formatDate(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+// Request with explicit token/memberId (for batch operations across accounts)
+async function requestAs<T>(
+  token: string,
+  memberId: string,
+  method: 'GET' | 'POST',
+  path: string,
+  data: Record<string, any> = {},
+  isJson: boolean = false
+): Promise<ApiResponse<T>> {
+  const url = BASE_URL + path;
+  const headers: Record<string, string> = {
+    'X-Requested-With': 'XMLHttpRequest',
+    'Access-Control-Max-Age': '86400',
+    Accept: 'application/json',
+    checktoken: '0',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MicroMessenger/8.0.49',
+  };
+  if (token) headers['X-Access-Token'] = token;
+  if (method === 'POST' && isJson) headers['Content-Type'] = 'application/json; charset=UTF-8';
+
+  const requestData = { ...data };
+  if (!requestData.memberId) requestData.memberId = memberId;
+  delete requestData.token;
+
+  try {
+    let resp;
+    if (method === 'GET') {
+      resp = await axios.get(url, { params: requestData, headers, timeout: 15000 });
+    } else if (isJson) {
+      resp = await axios.post(url, requestData, { headers, timeout: 15000 });
+    } else {
+      resp = await axios.post(url, null, { params: requestData, headers, timeout: 15000 });
+    }
+    return resp.data as ApiResponse<T>;
+  } catch (e: any) {
+    if (e.response) {
+      const msg = e.response.data?.message || e.response.statusText;
+      return { success: false, message: msg, code: e.response.status, result: null as T };
+    }
+    return { success: false, message: e.message || '网络错误', code: -1, result: null as T };
+  }
+}
+
 // ===== API Methods =====
 export const api = {
   // ===== Cinema =====
@@ -298,6 +341,18 @@ export const api = {
 
   getVoucherList: (orderId: string, payType: string = '') =>
     get('/api/activity/getVoucherList', { orderId, payType }),
+
+  // ===== 批量操作（指定账号 token/memberId，用于一键收录/刷新所有账号）=====
+  getMemberInfoByIdAs: (token: string, memberId: string) =>
+    requestAs<MemberInfo>(token, memberId, 'GET', '/api/member/getMemberInfoById'),
+
+  getMemberVouchersAs: (token: string, memberId: string, state: number = 1, pageNo: number = 1, pageSize: number = 100) =>
+    requestAs<{ records: Voucher[]; total: number }>(token, memberId, 'GET', '/api/activity/getAllVoucherByMemberId', {
+      pageNo,
+      pageSize,
+      state,
+    }),
+
 
   // 卖品可用优惠券列表
   getGoodsVoucherList: (data: Record<string, any> = {}) =>
