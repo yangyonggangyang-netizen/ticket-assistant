@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check, RefreshCw, BookMarked } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check, RefreshCw, BookMarked, Search, ArrowUpDown, ArrowUp, ArrowDown, ListChecks } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api, localApi } from '../api/client';
 import type { Account } from '../types';
@@ -39,24 +39,44 @@ export default function Accounts() {
   const [collecting, setCollecting] = useState(false);
   const [clearMsg, setClearMsg] = useState('');
   const [clearing, setClearing] = useState(false);
+  const [refreshingAll, setRefreshingAll] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortMode, setSortMode] = useState<'none' | 'asc' | 'desc'>('none');
 
-  // 收录券码：拉取当前账号未过期「电影票兑换券」，写入 D:/巴蒂哥/出票助手/卷码收录/{phone}.txt
-  const collectVouchers = async (accPhone?: string) => {
-    const active = getActiveAccount();
-    const targetPhone = accPhone || active?.phone || '';
-    if (!targetPhone) {
-      setCollectMsg('⚠️ 当前账号无手机号，无法收录券码（需先用手机号登录该账号）');
-      return;
+  // 过滤 + 排序后的账号列表
+  const visibleAccounts = useMemo(() => {
+    let list = [...accounts];
+    const q = searchTerm.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (a) =>
+          (a.name || '').toLowerCase().includes(q) ||
+          (a.phone || '').includes(q) ||
+          (a.memberId || '').includes(q)
+      );
     }
-    setCollecting(true);
-    setCollectMsg('');
+    if (sortMode === 'asc') {
+      list.sort((a, b) => Number(a.balance || 0) - Number(b.balance || 0));
+    } else if (sortMode === 'desc') {
+      list.sort((a, b) => Number(b.balance || 0) - Number(a.balance || 0));
+    }
+    return list;
+  }, [accounts, searchTerm, sortMode]);
+
+  // 收录指定账号的券码 + 余额积分，写入 D:/巴蒂哥/出票助手/卷码收录/{phone}.txt
+  const collectAccountVouchers = async (acc: Account): Promise<string> => {
+    if (!acc.phone) return `⚠️ ${acc.name || acc.memberId} 无手机号，跳过`;
+    if (!acc.token || !acc.memberId) return `⚠️ ${acc.phone} 无 token/memberId，跳过`;
     try {
-      const resp = await api.getMemberVouchers(1, 1, 100);
-      if (!resp.success) {
-        setCollectMsg('拉取券列表失败：' + (resp.message || '未知错误'));
-        return;
-      }
-      const records: any[] = (resp.result as any)?.records || [];
+      // 拉取余额/积分 + 券列表（用该账号自己的 token/memberId）
+      const [mResp, vResp] = await Promise.all([
+        api.getMemberInfoByIdAs(acc.token, acc.memberId),
+        api.getMemberVouchersAs(acc.token, acc.memberId, 1, 1, 100),
+      ]);
+      const info = mResp.success ? (mResp.result as any) : null;
+      const balance = info?.balance ?? acc.balance ?? 0;
+      const score = info?.score ?? acc.score ?? 0;
+      const records: any[] = (vResp.success ? (vResp.result as any)?.records : []) || [];
       const now = Date.now();
       const valid = records.filter((v: any) => {
         const vname = v.voucher_name || v.voucherName || '';
@@ -68,33 +88,102 @@ export default function Accounts() {
         }
         return true;
       });
-      if (valid.length === 0) {
-        setCollectMsg('✅ 没有需要收录的电影票兑换券（无未过期券）');
-        return;
-      }
       const lines: string[] = [];
-      lines.push(`手机号：${targetPhone}`);
+      lines.push(`${acc.phone}---${Number(balance).toFixed(2)}---${Number(score).toFixed(0)}`);
       lines.push(`收录时间：${new Date().toLocaleString('zh-CN')}`);
       lines.push(`收录数量：${valid.length} 张（电影票兑换券·未过期）`);
       lines.push('─'.repeat(34));
-      valid.forEach((v: any) => {
-        lines.push(`券名：${v.voucher_name || v.voucherName || ''}`);
-        lines.push(`券号：${v.voucher_no || v.voucherNo || ''}`);
-        lines.push(`到期时间：${v.sch_end_date || v.validEndTime || '未知'}`);
-        lines.push('─'.repeat(34));
-      });
-      const content = lines.join('\n');
-      const result = await window.electronAPI?.saveVoucherRecord(targetPhone, content);
-      if (result?.success) {
-        setCollectMsg(`✅ 已收录 ${valid.length} 张券 → ${result.filePath}`);
+      if (valid.length === 0) {
+        lines.push('（无未过期的电影票兑换券）');
       } else {
-        setCollectMsg('写入失败：' + (result?.error || '未知错误'));
+        valid.forEach((v: any) => {
+          lines.push(`券名：${v.voucher_name || v.voucherName || ''}`);
+          lines.push(`券号：${v.voucher_no || v.voucherNo || ''}`);
+          lines.push(`到期时间：${v.sch_end_date || v.validEndTime || '未知'}`);
+          lines.push('─'.repeat(34));
+        });
       }
+      const content = lines.join('\n');
+      const result = await window.electronAPI?.saveVoucherRecord(acc.phone, content);
+      if (result?.success) {
+        return `✅ ${acc.phone} 已收录 ${valid.length} 张券（余额 ¥${Number(balance).toFixed(2)} / 积分 ${Number(score).toFixed(0)}）`;
+      }
+      return `❌ ${acc.phone} 写入失败：${result?.error || '未知错误'}`;
     } catch (e: any) {
-      setCollectMsg('收录失败：' + e.message);
+      return `❌ ${acc.phone} 失败：${e.message}`;
+    }
+  };
+
+  // 收录当前激活账号
+  const collectVouchers = async () => {
+    const active = getActiveAccount();
+    if (!active) {
+      setCollectMsg('⚠️ 请先切换/激活一个账号');
+      return;
+    }
+    setCollecting(true);
+    setCollectMsg('');
+    try {
+      const msg = await collectAccountVouchers(active);
+      setCollectMsg(msg);
     } finally {
       setCollecting(false);
     }
+  };
+
+  // 一键收录所有已登录账号
+  const collectAllVouchers = async () => {
+    const targets = accounts.filter((a) => a.token && a.memberId && a.phone);
+    if (targets.length === 0) {
+      setCollectMsg('⚠️ 没有可收录的账号（需要手机号）');
+      return;
+    }
+    setCollecting(true);
+    setCollectMsg('');
+    const results: string[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const msg = await collectAccountVouchers(targets[i]);
+      results.push(msg);
+      setCollectMsg(`正在收录 (${i + 1}/${targets.length})... ${msg}`);
+    }
+    const ok = results.filter((r) => r.startsWith('✅')).length;
+    setCollectMsg(`✅ 收录完成：${ok}/${targets.length} 个账号成功`);
+  };
+
+  // 一键刷新所有账号信息（余额/积分/等级等）
+  const refreshAllAccounts = async () => {
+    setRefreshingAll(true);
+    setClearMsg('');
+    let okCount = 0;
+    const targetAccounts = accounts.filter((a) => a.token && a.memberId);
+    for (let i = 0; i < targetAccounts.length; i++) {
+      const acc = targetAccounts[i];
+      setClearMsg(`正在刷新 (${i + 1}/${targetAccounts.length})：${acc.name || acc.memberId}...`);
+      try {
+        const resp = await api.getMemberInfoByIdAs(acc.token, acc.memberId);
+        if (resp.success && resp.result) {
+          const info = resp.result as any;
+          updateAccount(acc.id, {
+            phone: info.phone || acc.phone,
+            level: info.level,
+            levelDictText: info.levelDictText || info.level_dictText,
+            balance: info.balance,
+            score: info.score,
+            growthNum: info.growthNum,
+            lastActiveAt: new Date().toISOString(),
+            tokenValid: true,
+          });
+          okCount++;
+        } else {
+          updateAccount(acc.id, { tokenValid: false });
+        }
+      } catch {
+        updateAccount(acc.id, { tokenValid: false });
+      }
+    }
+    await saveToStorage();
+    setClearMsg(`✅ 刷新完成：${okCount}/${targetAccounts.length} 个账号已更新`);
+    setRefreshingAll(false);
   };
 
   // 清理缓存 + 强制全量刷新（只刷新显示数据，不动 accounts.json）
@@ -105,7 +194,7 @@ export default function Accounts() {
     try {
       await refreshActiveAccount();
       const active = getActiveAccount();
-      if (active?.phone) await collectVouchers(active.phone);
+      if (active?.phone) await collectVouchers();
       setClearMsg('✅ 缓存已清理，数据已刷新');
     } catch (e: any) {
       setClearMsg('刷新失败：' + e.message);
@@ -252,7 +341,7 @@ export default function Accounts() {
         setPhone('');
         setCaptcha('');
         setPhoneLoginMsg('');
-        collectVouchers(p);
+        collectVouchers();
         return;
       }
       // 已注册 → 弹「使用原有账号」确认框
@@ -301,7 +390,7 @@ export default function Accounts() {
       setShowPhoneLogin(false);
       setPhone('');
       setCaptcha('');
-      collectVouchers(p);
+      collectVouchers();
     } catch (e: any) {
       setPhoneLoginMsg('换绑失败：' + e.message);
     } finally {
@@ -447,13 +536,31 @@ export default function Accounts() {
             {clearing ? '刷新中...' : '清理缓存'}
           </button>
           <button
-            onClick={() => collectVouchers()}
+            onClick={refreshAllAccounts}
+            disabled={refreshingAll}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-sky-500 text-white rounded-lg hover:bg-sky-600 disabled:opacity-50"
+            title="刷新所有已登录账号的余额/积分/等级等信息"
+          >
+            <ListChecks className={`w-4 h-4 ${refreshingAll ? 'animate-spin' : ''}`} />
+            {refreshingAll ? '刷新中...' : '刷新账号列表'}
+          </button>
+          <button
+            onClick={collectAllVouchers}
             disabled={collecting}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50"
-            title="重新收录当前账号的电影票兑换券到 卷码收录 文件夹"
+            title="一键收录所有已登录账号的电影票兑换券（含余额/积分）"
           >
             <BookMarked className={`w-4 h-4 ${collecting ? 'animate-pulse' : ''}`} />
-            {collecting ? '收录中...' : '重新收录券码'}
+            {collecting ? '收录中...' : '一键收录所有券码'}
+          </button>
+          <button
+            onClick={() => collectVouchers()}
+            disabled={collecting}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 disabled:opacity-50"
+            title="重新收录当前账号的电影票兑换券到 卷码收录 文件夹"
+          >
+            <BookMarked className="w-4 h-4" />
+            重新收录
           </button>
           {!HIDE_APP_BUTTONS && (
             <button
@@ -666,15 +773,54 @@ export default function Accounts() {
         </div>
       )}
 
+      {/* 搜索 + 排序 */}
+      {accounts.length > 0 && (
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="搜索账号名称 / 手机号 / MemberId"
+              className="w-full pl-9 pr-3 py-2 text-sm border rounded-lg outline-none focus:border-pink-400"
+            />
+          </div>
+          <button
+            onClick={() => setSortMode(sortMode === 'none' ? 'desc' : sortMode === 'desc' ? 'asc' : 'none')}
+            className={`flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border ${
+              sortMode === 'none'
+                ? 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                : 'bg-pink-50 border-pink-300 text-pink-600'
+            }`}
+            title="按余额排序：降序 → 升序 → 取消"
+          >
+            {sortMode === 'none' ? (
+              <ArrowUpDown className="w-4 h-4" />
+            ) : sortMode === 'desc' ? (
+              <ArrowDown className="w-4 h-4" />
+            ) : (
+              <ArrowUp className="w-4 h-4" />
+            )}
+            {sortMode === 'none' ? '按余额排序' : sortMode === 'desc' ? '余额降序' : '余额升序'}
+          </button>
+        </div>
+      )}
+
       {/* Account list */}
       <div className="space-y-3">
-        {accounts.length === 0 ? (
+        {visibleAccounts.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
-            <p>还没有添加账号</p>
-            <p className="text-xs mt-1">点击「捕获 Token」或「手动添加」开始</p>
+            {accounts.length === 0 ? (
+              <>
+                <p>还没有添加账号</p>
+                <p className="text-xs mt-1">点击「捕获 Token」或「手动添加」开始</p>
+              </>
+            ) : (
+              <p>没有匹配「{searchTerm}」的账号</p>
+            )}
           </div>
         ) : (
-          accounts.map((acc: Account) => (
+          visibleAccounts.map((acc: Account) => (
             <div
               key={acc.id}
               className={`bg-white rounded-lg border p-4 flex items-center gap-4 ${
