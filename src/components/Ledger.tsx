@@ -169,9 +169,10 @@ export default function Ledger() {
   };
 
   useEffect(() => {
-    // 不自动加载，进入页面显示提示，等用户点刷新
+    // 进入页面自动加载一次（不实时刷新、不转圈），手动刷新按钮可再拉
+    loadOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAccountId]);
+  }, []);
 
   // 手动覆盖数据（编辑过的日期，覆盖自动统计）
   const [overrides, setOverrides] = useState<Record<string, { tickets: number; income: number; profit?: number }>>(loadOverrides);
@@ -356,7 +357,7 @@ export default function Ledger() {
       {/* 首次未加载提示 */}
       {orders.length === 0 && !loading && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-700 text-center">
-          点击右上角「刷新」按钮加载所有账号的出票记录
+          正在加载所有账号的出票记录，请稍候…（也可点右上角「刷新」重新拉取）
         </div>
       )}
 
