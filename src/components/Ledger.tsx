@@ -63,8 +63,21 @@ function orderDate(order: any): string {
   return '';
 }
 
-// 取订单票数
+// 取订单票数（真实票数在 message.num，不在顶层 buy_num）
 function orderTickets(order: any): number {
+  // 优先从 message 里取 num
+  try {
+    const msg = typeof order.message === 'string' ? JSON.parse(order.message) : order.message;
+    if (Array.isArray(msg) && msg[0] && msg[0].num) {
+      const n = Number(msg[0].num);
+      if (n > 0) return n;
+    }
+    if (msg && typeof msg === 'object' && msg.num) {
+      const n = Number(msg.num);
+      if (n > 0) return n;
+    }
+  } catch {}
+  // 兜底：顶层字段
   const n = Number(order.buy_num ?? order.buyNum ?? order.ticketCount ?? order.quantity ?? 1);
   return n > 0 ? n : 1;
 }
