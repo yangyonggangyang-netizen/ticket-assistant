@@ -25,17 +25,19 @@ function isJiahe(order: any): boolean {
   return name.includes('嘉和');
 }
 
-// 判断订单是否是「已支付的电影票订单」
-// 规则：type=1（电影票）+ status=7（已支付正常）+ 实付金额 >= 0
-// 排除：卖品(type=4)、储值(type=2)、会员扣费(type=12)、退款单(type=7/负金额)、退票取消(status=8)
-function isMovieOrder(order: any): boolean {
-  // 排除退款/取消：status=8 是已退票/取消
+// 订单成功状态判断：status=7 或 8 都算成功（电影票7、充值8），0/9/负数排除
+function isSuccessOrder(order: any): boolean {
   const status = Number(order.status ?? -1);
-  if (status === 8 || status === 0 || status === -1) return false;
-  // 排除负金额（退款单）
+  if (status === 7 || status === 8) return true;
+  return false;
+}
+
+// 判断订单是否是「成功的电影票订单」
+// 规则：type=1（电影票）+ 成功状态 + 实付金额 >= 0
+function isMovieOrder(order: any): boolean {
+  if (!isSuccessOrder(order)) return false;
   const pay = Number(order.pay_amount ?? order.payAmount ?? 0);
   if (pay < 0) return false;
-  // 必须是 type=1 电影票
   const type = String(order.type ?? order.orderType ?? order.saleType ?? '').toLowerCase();
   if (type === '1' || type.includes('film') || type.includes('movie') || type.includes('ticket')) {
     return true;
@@ -50,6 +52,56 @@ function isMovieOrder(order: any): boolean {
   } catch {
     return false;
   }
+}
+
+// 判断订单是否是「成功的充值订单」（type=2，pay_amount = 充值金额）
+function isRechargeOrder(order: any): boolean {
+  if (!isSuccessOrder(order)) return false;
+  const pay = Number(order.pay_amount ?? order.payAmount ?? 0);
+  if (pay < 0) return false;
+  const type = String(order.type ?? order.orderType ?? order.saleType ?? '').toLowerCase();
+  if (type === '2' || type.includes('recharge') || type.includes('setmeal') || type.includes('stored')) {
+    return true;
+  }
+  return false;
+}
+
+// 卖品订单解析：返回 { pay: 实付金额合计, score: 积分合计(爆米花), count: 商品件数 }
+// 规则：含「可乐」→算金额(实付)；含「爆米花」→算积分(商品单价×数量)；成功订单才统计
+function parseSnackOrder(order: any): { pay: number; score: number; count: number } {
+  const result = { pay: 0, score: 0, count: 0 };
+  if (!isSuccessOrder(order)) return result;
+  const pay = Number(order.pay_amount ?? order.payAmount ?? 0);
+  if (pay < 0) return result;
+  const type = String(order.type ?? order.orderType ?? order.saleType ?? '').toLowerCase();
+  if (!(type === '4' || type.includes('goods') || type.includes('snack'))) return result;
+  // 解析 message 商品列表
+  let items: any[] = [];
+  try {
+    const msg = typeof order.message === 'string' ? JSON.parse(order.message) : order.message;
+    if (Array.isArray(msg)) items = msg;
+    else if (msg && Array.isArray(msg.items)) items = msg.items;
+  } catch {}
+  if (items.length === 0) {
+    // message 无明细时，整单按金额算（兜底）
+    result.pay += pay;
+    result.count += 1;
+    return result;
+  }
+  items.forEach((it: any) => {
+    const name = String(it.planName || it.goodsName || it.name || '');
+    const num = Number(it.num ?? it.quantity ?? 1) || 1;
+    const price = Number(it.price ?? 0) || 0;
+    if (name.includes('可乐') || name.includes('雪碧') || name.includes('饮料') || name.includes('水')) {
+      // 可乐类 → 金额
+      result.pay += pay > 0 && items.length === 1 ? pay : price * num;
+    } else if (name.includes('爆米花')) {
+      // 爆米花 → 积分（按单价×数量）
+      result.score += Math.round(price * num);
+    }
+    result.count += num;
+  });
+  return result;
 }
 
 // 取订单日期 yyyy-mm-dd（create_time 可能是毫秒时间戳或日期字符串）
@@ -195,6 +247,11 @@ export default function Ledger() {
       }
     } catch {}
     loadOrders();
+    // 每 60 秒后台自动刷新（出新票/新单自动入账，不用手动刷新）
+    const timer = setInterval(() => {
+      loadOrders();
+    }, 60000);
+    return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -231,14 +288,39 @@ export default function Ledger() {
     setEditingDate('');
   };
 
-  // 按日期聚合电影票订单：收入=实付总和；利润=固定卖价×张数-实付
+  // 按日期聚合：电影票(张数/订单/实付/利润) + 充值(单数/金额) + 卖品(订单/金额/积分)
   const daily = useMemo(() => {
-    const map = new Map<string, { tickets: number; income: number; count: number; profit: number; cost: number }>();
+    type DayStat = {
+      tickets: number; income: number; count: number; profit: number; cost: number;
+      rechargeCount: number; rechargeAmount: number;
+      snackCount: number; snackPay: number; snackScore: number;
+    };
+    const empty = (): DayStat => ({ tickets: 0, income: 0, count: 0, profit: 0, cost: 0, rechargeCount: 0, rechargeAmount: 0, snackCount: 0, snackPay: 0, snackScore: 0 });
+    const map = new Map<string, DayStat>();
     orders.forEach((o) => {
-      if (!isMovieOrder(o)) return;
       const d = orderDate(o);
       if (!d) return;
-      const cur = map.get(d) || { tickets: 0, income: 0, count: 0, profit: 0, cost: 0 };
+      // 充值订单（独立统计，不混入电影票）
+      if (isRechargeOrder(o)) {
+        const cur = map.get(d) || empty();
+        cur.rechargeCount += 1;
+        cur.rechargeAmount += orderAmount(o);
+        map.set(d, cur);
+        return;
+      }
+      // 卖品订单（可乐→金额，爆米花→积分）
+      const snack = parseSnackOrder(o);
+      if (snack.count > 0) {
+        const cur = map.get(d) || empty();
+        cur.snackCount += 1;
+        cur.snackPay += snack.pay;
+        cur.snackScore += snack.score;
+        map.set(d, cur);
+        return;
+      }
+      // 电影票
+      if (!isMovieOrder(o)) return;
+      const cur = map.get(d) || empty();
       const n = orderTickets(o);
       const amount = orderAmount(o);
       const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi; // 卖价按影院
@@ -253,7 +335,7 @@ export default function Ledger() {
     // 应用手动覆盖（编辑过的日期用手动值）
     Object.entries(overrides).forEach(([date, ov]) => {
       if (!map.has(date)) {
-        map.set(date, { tickets: 0, income: 0, count: 0, profit: 0, cost: 0 });
+        map.set(date, empty());
       }
       const cur = map.get(date)!;
       cur.tickets = ov.tickets;
@@ -278,7 +360,7 @@ export default function Ledger() {
     return cells;
   }, [viewDate]);
 
-  // 月统计
+  // 月统计（含充值/卖品）
   const monthStats = useMemo(() => {
     const { y, m } = viewDate;
     const prefix = `${y}-${String(m + 1).padStart(2, '0')}`;
@@ -286,39 +368,59 @@ export default function Ledger() {
     let income = 0;
     let count = 0;
     let profit = 0;
+    let rechargeCount = 0;
+    let rechargeAmount = 0;
+    let snackCount = 0;
+    let snackPay = 0;
+    let snackScore = 0;
     daily.forEach((v, d) => {
       if (d.startsWith(prefix)) {
         tickets += v.tickets;
         income += v.income;
         count += v.count;
         profit += v.profit;
+        rechargeCount += v.rechargeCount;
+        rechargeAmount += v.rechargeAmount;
+        snackCount += v.snackCount;
+        snackPay += v.snackPay;
+        snackScore += v.snackScore;
       }
     });
-    return { tickets, income, count, profit };
+    return { tickets, income, count, profit, rechargeCount, rechargeAmount, snackCount, snackPay, snackScore };
   }, [daily, viewDate]);
 
-  // 年统计
+  // 年统计（含充值/卖品）
   const yearStats = useMemo(() => {
     const prefix = `${viewDate.y}-`;
     let tickets = 0;
     let income = 0;
     let count = 0;
     let profit = 0;
+    let rechargeCount = 0;
+    let rechargeAmount = 0;
+    let snackCount = 0;
+    let snackPay = 0;
+    let snackScore = 0;
     daily.forEach((v, d) => {
       if (d.startsWith(prefix)) {
         tickets += v.tickets;
         income += v.income;
         count += v.count;
         profit += v.profit;
+        rechargeCount += v.rechargeCount;
+        rechargeAmount += v.rechargeAmount;
+        snackCount += v.snackCount;
+        snackPay += v.snackPay;
+        snackScore += v.snackScore;
       }
     });
-    return { tickets, income, count, profit };
+    return { tickets, income, count, profit, rechargeCount, rechargeAmount, snackCount, snackPay, snackScore };
   }, [daily, viewDate]);
 
-  // 选中日期的订单明细
+  // 选中日期的全部订单（电影票 + 充值 + 卖品）
   const selectedOrders = useMemo(() => {
     if (!selectedDay) return [];
-    return orders.filter((o) => isMovieOrder(o) && orderDate(o) === selectedDay);
+    return orders.filter((o) => orderDate(o) === selectedDay && (isMovieOrder(o) || isRechargeOrder(o) || parseSnackOrder(o).count > 0));
   }, [orders, selectedDay]);
 
   const prevMonth = () => {
@@ -398,13 +500,25 @@ export default function Ledger() {
             </div>
             <div>
               <p className="text-2xl font-bold text-pink-600">¥{yearStats.income.toFixed(0)}</p>
-              <p className="text-xs text-pink-500">实付合计</p>
+              <p className="text-xs text-pink-500">电影票实付</p>
             </div>
             <div>
               <p className={`text-2xl font-bold ${yearStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {yearStats.profit >= 0 ? '+' : ''}¥{yearStats.profit.toFixed(0)}
               </p>
               <p className="text-xs text-gray-500">利润</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-blue-600">¥{yearStats.rechargeAmount.toFixed(0)}</p>
+              <p className="text-xs text-blue-500">充值总额</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-orange-500">¥{yearStats.snackPay.toFixed(0)}</p>
+              <p className="text-xs text-orange-500">卖品金额</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-purple-600">{yearStats.snackScore}</p>
+              <p className="text-xs text-purple-500">卖品积分</p>
             </div>
           </div>
         </div>
@@ -419,13 +533,25 @@ export default function Ledger() {
             </div>
             <div>
               <p className="text-2xl font-bold text-green-600">¥{monthStats.income.toFixed(0)}</p>
-              <p className="text-xs text-green-500">实付合计</p>
+              <p className="text-xs text-green-500">电影票实付</p>
             </div>
             <div>
               <p className={`text-2xl font-bold ${monthStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {monthStats.profit >= 0 ? '+' : ''}¥{monthStats.profit.toFixed(0)}
               </p>
               <p className="text-xs text-gray-500">利润</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-blue-600">¥{monthStats.rechargeAmount.toFixed(0)}</p>
+              <p className="text-xs text-blue-500">充值总额</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-orange-500">¥{monthStats.snackPay.toFixed(0)}</p>
+              <p className="text-xs text-orange-500">卖品金额</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-purple-600">{monthStats.snackScore}</p>
+              <p className="text-xs text-purple-500">卖品积分</p>
             </div>
           </div>
         </div>
@@ -532,6 +658,17 @@ export default function Ledger() {
                     <p className={`text-xs flex items-center gap-1 ${stat.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                       {stat.profit >= 0 ? '▲' : '▼'} {stat.profit >= 0 ? '+' : ''}¥{stat.profit.toFixed(0)}
                     </p>
+                    {(stat.rechargeCount > 0 || stat.snackCount > 0) && (
+                      <p className="text-[10px] text-gray-500 flex items-center gap-1">
+                        {stat.rechargeCount > 0 && <span className="text-blue-600">充¥{stat.rechargeAmount.toFixed(0)}</span>}
+                        {stat.snackCount > 0 && (
+                          <span className="text-orange-500">
+                            卖品{stat.snackCount}单{stat.snackPay > 0 ? ` ¥${stat.snackPay.toFixed(0)}` : ''}
+                            {stat.snackScore > 0 ? ` ${stat.snackScore}分` : ''}
+                          </span>
+                        )}
+                      </p>
+                    )}
                   </div>
                 )}
               </button>
@@ -563,6 +700,51 @@ export default function Ledger() {
           ) : (
             <div className="space-y-2 max-h-72 overflow-auto">
               {selectedOrders.map((o, i) => {
+                const type = String(o.type ?? '');
+                // 充值订单
+                if (isRechargeOrder(o)) {
+                  const amt = orderAmount(o);
+                  return (
+                    <div key={i} className="flex items-center justify-between text-sm bg-blue-50 rounded-lg p-2.5">
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate font-medium">充值/购买套餐</p>
+                        <p className="text-xs text-gray-400">充值订单 · {o.type_name || '购买套餐'}</p>
+                      </div>
+                      <div className="text-right ml-3">
+                        <p className="font-bold text-blue-600">¥{amt.toFixed(0)}</p>
+                        <p className="text-[10px] text-gray-400">充值金额</p>
+                      </div>
+                    </div>
+                  );
+                }
+                // 卖品订单
+                const snack = parseSnackOrder(o);
+                if (snack.count > 0) {
+                  const names = (() => {
+                    try {
+                      const m = typeof o.message === 'string' ? JSON.parse(o.message) : o.message;
+                      if (Array.isArray(m)) return m.map((x: any) => `${x.planName || x.goodsName || '卖品'}×${x.num || 1}`).join('、');
+                    } catch {}
+                    return '卖品';
+                  })();
+                  return (
+                    <div key={i} className="flex items-center justify-between text-sm bg-orange-50 rounded-lg p-2.5">
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate font-medium">{names}</p>
+                        <p className="text-xs text-gray-400">
+                          卖品订单
+                          {snack.pay > 0 ? ` · 金额 ¥${snack.pay.toFixed(0)}` : ''}
+                          {snack.score > 0 ? ` · 积分 ${snack.score}` : ''}
+                        </p>
+                      </div>
+                      <div className="text-right ml-3">
+                        {snack.pay > 0 && <p className="font-bold text-orange-500">¥{snack.pay.toFixed(0)}</p>}
+                        {snack.score > 0 && <p className="font-bold text-purple-600">{snack.score}分</p>}
+                      </div>
+                    </div>
+                  );
+                }
+                // 电影票订单
                 const msg = (() => {
                   try {
                     const m = typeof o.message === 'string' ? JSON.parse(o.message) : o.message;
