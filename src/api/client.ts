@@ -272,6 +272,14 @@ export const api = {
 
   getSaleOrder: (orderId: string) => get('/api/order/getSaleOrder', { orderId }),
 
+  // 指定账号拉订单列表（跨账号统计用）
+  getOrderListAs: (token: string, memberId: string, pageNo: number = 1, pageSize: number = 100) =>
+    requestAs<{ records: any[]; total: number } | any[]>(token, memberId, 'GET', '/api/order/getSaleOrder', {
+      pageNo,
+      pageSize,
+      flag: 1,
+    }),
+
   getPaymentOrder: (orderId: string) => get('/api/order/getPaymentOrder', { orderId }),
 
   refundTicket: (orderId: string) => post('/api/order/refundTicket', { orderId }),
