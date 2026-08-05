@@ -66,8 +66,8 @@ function isRechargeOrder(order: any): boolean {
   return false;
 }
 
-// 卖品订单解析：返回 { pay: 实付金额合计, score: 积分合计(爆米花), count: 商品件数 }
-// 规则：含「可乐」→算金额(实付)；含「爆米花」→算积分(商品单价×数量)；成功订单才统计
+// 卖品订单解析：返回 { pay: 实付金额合计, score: 积分合计, count: 商品件数 }
+// 规则：可乐类→算金额(实付)；爆米花类→算积分(details.jifen)；成功订单才统计
 function parseSnackOrder(order: any): { pay: number; score: number; count: number } {
   const result = { pay: 0, score: 0, count: 0 };
   if (!isSuccessOrder(order)) return result;
@@ -75,7 +75,29 @@ function parseSnackOrder(order: any): { pay: number; score: number; count: numbe
   if (pay < 0) return result;
   const type = String(order.type ?? order.orderType ?? order.saleType ?? '').toLowerCase();
   if (!(type === '4' || type.includes('goods') || type.includes('snack'))) return result;
-  // 解析 message 商品列表
+  // 优先用 details（含 jifen 积分字段）
+  const details = order.details || order.orderDetails || [];
+  if (Array.isArray(details) && details.length > 0) {
+    details.forEach((it: any) => {
+      const name = String(it.goods_name || it.goodsName || it.planName || '');
+      const jifen = Number(it.jifen ?? it.score ?? 0) || 0;
+      const num = Number(it.take_num ?? it.amount ?? it.num ?? 1) || 1;
+      const price = Number(it.price ?? 0) || 0;
+      if (name.includes('可乐') || name.includes('雪碧') || name.includes('饮料') || name.includes('水')) {
+        // 可乐类 → 金额（实付或单价×数量）
+        result.pay += details.length === 1 && pay > 0 ? pay : price * num;
+      } else if (jifen > 0) {
+        // 爆米花等有积分的 → 积分（用订单里的 jifen 字段）
+        result.score += jifen * num;
+      } else {
+        // 其他无积分卖品 → 金额
+        result.pay += details.length === 1 && pay > 0 ? pay : price * num;
+      }
+      result.count += num;
+    });
+    return result;
+  }
+  // message 商品列表兜底
   let items: any[] = [];
   try {
     const msg = typeof order.message === 'string' ? JSON.parse(order.message) : order.message;
@@ -83,7 +105,6 @@ function parseSnackOrder(order: any): { pay: number; score: number; count: numbe
     else if (msg && Array.isArray(msg.items)) items = msg.items;
   } catch {}
   if (items.length === 0) {
-    // message 无明细时，整单按金额算（兜底）
     result.pay += pay;
     result.count += 1;
     return result;
@@ -93,10 +114,8 @@ function parseSnackOrder(order: any): { pay: number; score: number; count: numbe
     const num = Number(it.num ?? it.quantity ?? 1) || 1;
     const price = Number(it.price ?? 0) || 0;
     if (name.includes('可乐') || name.includes('雪碧') || name.includes('饮料') || name.includes('水')) {
-      // 可乐类 → 金额
-      result.pay += pay > 0 && items.length === 1 ? pay : price * num;
+      result.pay += items.length === 1 && pay > 0 ? pay : price * num;
     } else if (name.includes('爆米花')) {
-      // 爆米花 → 积分（按单价×数量）
       result.score += Math.round(price * num);
     }
     result.count += num;
@@ -236,7 +255,7 @@ export default function Ledger() {
   };
 
   useEffect(() => {
-    // 先读缓存立即显示（不转圈），再后台静默刷新更新数据
+    // 先读缓存立即显示（不转圈），再后台静默刷新一次
     try {
       const raw = localStorage.getItem('ledger_orders_cache');
       if (raw) {
@@ -247,11 +266,7 @@ export default function Ledger() {
       }
     } catch {}
     loadOrders();
-    // 每 60 秒后台自动刷新（出新票/新单自动入账，不用手动刷新）
-    const timer = setInterval(() => {
-      loadOrders();
-    }, 60000);
-    return () => clearInterval(timer);
+    // 不自动定时刷新；用户点「刷新」按钮时才重新拉取，数据保持
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -493,31 +508,31 @@ export default function Ledger() {
           <p className="text-xs text-pink-600 font-medium flex items-center gap-1">
             <TrendingUp className="w-3.5 h-3.5" /> {viewDate.y} 年统计
           </p>
-          <div className="flex gap-5 mt-2">
+          <div className="grid grid-cols-3 gap-3 mt-3">
             <div>
-              <p className="text-2xl font-bold text-pink-600">{yearStats.tickets}</p>
+              <p className="text-xl font-bold text-pink-600">{yearStats.tickets}</p>
               <p className="text-xs text-pink-500">出票（张）</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-pink-600">¥{yearStats.income.toFixed(0)}</p>
+              <p className="text-xl font-bold text-pink-600">¥{yearStats.income.toFixed(0)}</p>
               <p className="text-xs text-pink-500">电影票实付</p>
             </div>
             <div>
-              <p className={`text-2xl font-bold ${yearStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              <p className={`text-xl font-bold ${yearStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {yearStats.profit >= 0 ? '+' : ''}¥{yearStats.profit.toFixed(0)}
               </p>
               <p className="text-xs text-gray-500">利润</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-blue-600">¥{yearStats.rechargeAmount.toFixed(0)}</p>
+              <p className="text-xl font-bold text-blue-600">¥{yearStats.rechargeAmount.toFixed(0)}</p>
               <p className="text-xs text-blue-500">充值总额</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-orange-500">¥{yearStats.snackPay.toFixed(0)}</p>
+              <p className="text-xl font-bold text-orange-500">¥{yearStats.snackPay.toFixed(0)}</p>
               <p className="text-xs text-orange-500">卖品金额</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-purple-600">{yearStats.snackScore}</p>
+              <p className="text-xl font-bold text-purple-600">{yearStats.snackScore}</p>
               <p className="text-xs text-purple-500">卖品积分</p>
             </div>
           </div>
@@ -526,31 +541,31 @@ export default function Ledger() {
           <p className="text-xs text-green-600 font-medium flex items-center gap-1">
             <CalendarDays className="w-3.5 h-3.5" /> {viewDate.y} 年 {viewDate.m + 1} 月统计
           </p>
-          <div className="flex gap-5 mt-2">
+          <div className="grid grid-cols-3 gap-3 mt-3">
             <div>
-              <p className="text-2xl font-bold text-green-600">{monthStats.tickets}</p>
+              <p className="text-xl font-bold text-green-600">{monthStats.tickets}</p>
               <p className="text-xs text-green-500">出票（张）</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-green-600">¥{monthStats.income.toFixed(0)}</p>
+              <p className="text-xl font-bold text-green-600">¥{monthStats.income.toFixed(0)}</p>
               <p className="text-xs text-green-500">电影票实付</p>
             </div>
             <div>
-              <p className={`text-2xl font-bold ${monthStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              <p className={`text-xl font-bold ${monthStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {monthStats.profit >= 0 ? '+' : ''}¥{monthStats.profit.toFixed(0)}
               </p>
               <p className="text-xs text-gray-500">利润</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-blue-600">¥{monthStats.rechargeAmount.toFixed(0)}</p>
+              <p className="text-xl font-bold text-blue-600">¥{monthStats.rechargeAmount.toFixed(0)}</p>
               <p className="text-xs text-blue-500">充值总额</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-orange-500">¥{monthStats.snackPay.toFixed(0)}</p>
+              <p className="text-xl font-bold text-orange-500">¥{monthStats.snackPay.toFixed(0)}</p>
               <p className="text-xs text-orange-500">卖品金额</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-purple-600">{monthStats.snackScore}</p>
+              <p className="text-xl font-bold text-purple-600">{monthStats.snackScore}</p>
               <p className="text-xs text-purple-500">卖品积分</p>
             </div>
           </div>
@@ -635,7 +650,7 @@ export default function Ledger() {
               <button
                 key={cell.date}
                 onClick={() => setSelectedDay(isSelected ? '' : cell.date)}
-                className={`min-h-[92px] border-t border-r text-left p-2 transition-colors relative ${
+                className={`min-h-[96px] border-t border-r text-left p-2 transition-colors relative ${
                   isSelected ? 'bg-pink-50' : stat ? 'hover:bg-pink-50/40' : 'hover:bg-gray-50'
                 } ${i % 7 === 6 ? 'border-r-0' : ''}`}
               >
@@ -647,27 +662,30 @@ export default function Ledger() {
                   {cell.day}
                 </span>
                 {stat && (
-                  <div className="mt-1.5 space-y-1">
-                    <p className="text-xs text-pink-600 font-semibold flex items-center gap-1">
-                      <Ticket className="w-3.5 h-3.5" /> {stat.tickets} 张
-                      {isOverridden && <span className="text-[9px] bg-pink-200 text-pink-700 rounded px-1">改</span>}
-                    </p>
-                    <p className="text-xs text-green-600 font-medium flex items-center gap-1">
-                      <Banknote className="w-3.5 h-3.5" /> ¥{stat.income.toFixed(0)}
-                    </p>
-                    <p className={`text-xs flex items-center gap-1 ${stat.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                      {stat.profit >= 0 ? '▲' : '▼'} {stat.profit >= 0 ? '+' : ''}¥{stat.profit.toFixed(0)}
-                    </p>
-                    {(stat.rechargeCount > 0 || stat.snackCount > 0) && (
-                      <p className="text-[10px] text-gray-500 flex items-center gap-1">
-                        {stat.rechargeCount > 0 && <span className="text-blue-600">充¥{stat.rechargeAmount.toFixed(0)}</span>}
-                        {stat.snackCount > 0 && (
-                          <span className="text-orange-500">
-                            卖品{stat.snackCount}单{stat.snackPay > 0 ? ` ¥${stat.snackPay.toFixed(0)}` : ''}
-                            {stat.snackScore > 0 ? ` ${stat.snackScore}分` : ''}
-                          </span>
-                        )}
+                  <div className="mt-1 space-y-1">
+                    {/* 左列：电影票 */}
+                    <div className="space-y-0.5">
+                      <p className="text-sm text-pink-600 font-semibold flex items-center gap-1">
+                        <Ticket className="w-4 h-4" /> {stat.tickets} 张
+                        {isOverridden && <span className="text-[9px] bg-pink-200 text-pink-700 rounded px-1">改</span>}
                       </p>
+                      <p className="text-sm text-green-600 font-medium flex items-center gap-1">
+                        <Banknote className="w-4 h-4" /> ¥{stat.income.toFixed(0)}
+                      </p>
+                      <p className={`text-sm flex items-center gap-1 ${stat.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {stat.profit >= 0 ? '▲' : '▼'} {stat.profit >= 0 ? '+' : ''}¥{stat.profit.toFixed(0)}
+                      </p>
+                    </div>
+                    {/* 右列：充值/卖品（换行显示，不挤一行） */}
+                    {stat.rechargeCount > 0 && (
+                      <p className="text-xs text-blue-600 font-medium">💰 充值 ¥{stat.rechargeAmount.toFixed(0)}</p>
+                    )}
+                    {stat.snackCount > 0 && (
+                      <div className="text-xs text-orange-500">
+                        <p>🍿 卖品 {stat.snackCount} 单</p>
+                        {stat.snackPay > 0 && <p>金额 ¥{stat.snackPay.toFixed(0)}</p>}
+                        {stat.snackScore > 0 && <p>积分 {stat.snackScore}</p>}
+                      </div>
                     )}
                   </div>
                 )}
