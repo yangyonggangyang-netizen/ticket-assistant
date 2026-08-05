@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User, CalendarDays, Banknote } from 'lucide-react';
+import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User, CalendarDays, Banknote, Pencil, Check, X } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
+import { loadOverrides, saveOverride } from '../store/ledgerOverride';
 import type { Page } from '../App';
 
 export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
@@ -11,6 +12,25 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const [movieCount, setMovieCount] = useState(0);
   const [loadingMovies, setLoadingMovies] = useState(false);
   const [todayStats, setTodayStats] = useState<{ count: number; income: number; loading: boolean }>({ count: 0, income: 0, loading: false });
+  const [todayOverridden, setTodayOverridden] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editTickets, setEditTickets] = useState('');
+  const [editIncome, setEditIncome] = useState('');
+  const [todayStr] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
+
+  // 读取手动覆盖（与记账日历同步）
+  const refreshOverride = () => {
+    const ov = loadOverrides();
+    if (ov[todayStr]) {
+      setTodayStats((s) => ({ ...s, count: ov[todayStr].tickets, income: ov[todayStr].income, loading: false }));
+      setTodayOverridden(true);
+    } else {
+      setTodayOverridden(false);
+    }
+  };
 
   const loadMovies = async () => {
     setLoadingMovies(true);
@@ -41,7 +61,31 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 取订单票数（真实票数在 message.num）
+  const orderTickets = (o: any): number => {
+    try {
+      const msg = typeof o.message === 'string' ? JSON.parse(o.message) : o.message;
+      if (Array.isArray(msg) && msg[0] && msg[0].num) {
+        const n = Number(msg[0].num);
+        if (n > 0) return n;
+      }
+      if (msg && typeof msg === 'object' && msg.num) {
+        const n = Number(msg.num);
+        if (n > 0) return n;
+      }
+    } catch {}
+    const n = Number(o.buy_num ?? o.buyNum ?? o.ticketCount ?? 1);
+    return n > 0 ? n : 1;
+  };
+
   const loadTodayStats = async () => {
+    // 若今天有手动覆盖值，直接显示（不覆盖用户编辑）
+    const ov = loadOverrides();
+    if (ov[todayStr]) {
+      setTodayStats((s) => ({ ...s, count: ov[todayStr].tickets, income: ov[todayStr].income, loading: false }));
+      setTodayOverridden(true);
+      return;
+    }
     setTodayStats((s) => ({ ...s, loading: true }));
     try {
       // 拉所有已登录账号的最近订单（每账号最多 5 页）
@@ -59,9 +103,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           if (total && all.length >= Number(total)) break;
         }
       }
-      const today = new Date();
-      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-      // 统计今日已支付电影票订单
+      // 统计今日已支付电影票订单（type=1 + status=7 + 金额>=0，排除卖品/储值/退票/退款）
       let count = 0;
       let income = 0;
       all.forEach((o: any) => {
@@ -81,22 +123,39 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           }
         }
         if (dayStr !== todayStr) return;
-        // type 1 = 电影票
-        const type = Number(o.type ?? o.order_type ?? 1);
+        // 只统计电影票（type=1），排除卖品(4)/储值(2)/会员扣费(12)
+        const type = Number(o.type ?? o.order_type ?? 0);
         if (type !== 1) return;
-        const payAmount = Number(o.pay_amount ?? o.payAmount ?? 0);
-        const buyNum = Number(o.buy_num ?? o.buyNum ?? o.ticketCount ?? 1);
-        // 已支付：status 判断（1/2 等已支付状态；0 待支付）
+        // 排除退票/取消（status=8）和待支付（0/-1）
         const status = Number(o.status ?? -1);
-        if (status === 0 || status === -1) return;
-        count += buyNum > 0 ? buyNum : 1;
+        if (status === 8 || status === 0 || status === -1) return;
+        // 排除负金额（退款单）
+        const payAmount = Number(o.pay_amount ?? o.payAmount ?? 0);
+        if (payAmount < 0) return;
+        count += orderTickets(o);
         income += payAmount;
       });
       setTodayStats({ count, income, loading: false });
+      setTodayOverridden(false);
     } catch (e) {
       console.error('Failed to load today stats:', e);
       setTodayStats((s) => ({ ...s, loading: false }));
     }
+  };
+
+  // 手动编辑今日出票（与记账日历同步）
+  const startEdit = () => {
+    setEditTickets(String(todayStats.count));
+    setEditIncome(String(todayStats.income));
+    setEditing(true);
+  };
+  const saveEdit = () => {
+    const tickets = Math.max(0, Number(editTickets) || 0);
+    const income = Number(editIncome) || 0;
+    saveOverride(todayStr, { tickets, income });
+    setTodayStats({ count: tickets, income, loading: false });
+    setTodayOverridden(true);
+    setEditing(false);
   };
 
   if (!account) {
@@ -185,15 +244,49 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           <h3 className="text-sm font-medium flex items-center gap-2">
             <CalendarDays className="w-4 h-4 text-pink-500" />
             今日出票记录
+            {todayOverridden && (
+              <span className="text-[10px] bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">已手动编辑</span>
+            )}
           </h3>
-          <button
-            onClick={loadTodayStats}
-            disabled={todayStats.loading}
-            className="flex items-center gap-1 text-xs text-pink-500 hover:text-pink-600 disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3 h-3 ${todayStats.loading ? 'animate-spin' : ''}`} />
-            刷新
-          </button>
+          <div className="flex items-center gap-2">
+            {!editing && (
+              <>
+                <button
+                  onClick={startEdit}
+                  className="flex items-center gap-1 text-xs text-purple-500 hover:text-purple-600"
+                >
+                  <Pencil className="w-3 h-3" />
+                  编辑
+                </button>
+                <button
+                  onClick={loadTodayStats}
+                  disabled={todayStats.loading}
+                  className="flex items-center gap-1 text-xs text-pink-500 hover:text-pink-600 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${todayStats.loading ? 'animate-spin' : ''}`} />
+                  刷新
+                </button>
+              </>
+            )}
+            {editing && (
+              <>
+                <button
+                  onClick={saveEdit}
+                  className="flex items-center gap-1 text-xs bg-purple-500 text-white px-2 py-1 rounded hover:bg-purple-600"
+                >
+                  <Check className="w-3 h-3" />
+                  保存
+                </button>
+                <button
+                  onClick={() => setEditing(false)}
+                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+                >
+                  <X className="w-3 h-3" />
+                  取消
+                </button>
+              </>
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div className="bg-pink-50 rounded-lg p-4">
@@ -201,22 +294,42 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
               <Ticket className="w-3.5 h-3.5" />
               今日出票（张）
             </p>
-            <p className="text-2xl font-bold text-pink-600 mt-1">
-              {todayStats.loading ? '...' : todayStats.count}
-            </p>
+            {editing ? (
+              <input
+                type="number"
+                value={editTickets}
+                onChange={(e) => setEditTickets(e.target.value)}
+                className="mt-1 w-full px-2 py-1.5 text-xl font-bold text-pink-600 border rounded-lg outline-none focus:border-pink-400"
+                autoFocus
+              />
+            ) : (
+              <p className="text-2xl font-bold text-pink-600 mt-1">
+                {todayStats.loading ? '...' : todayStats.count}
+              </p>
+            )}
           </div>
           <div className="bg-green-50 rounded-lg p-4">
             <p className="text-xs text-green-600 flex items-center gap-1">
               <Banknote className="w-3.5 h-3.5" />
               今日收入（元）
             </p>
-            <p className="text-2xl font-bold text-green-600 mt-1">
-              {todayStats.loading ? '...' : `¥${todayStats.income.toFixed(2)}`}
-            </p>
+            {editing ? (
+              <input
+                type="number"
+                step="0.01"
+                value={editIncome}
+                onChange={(e) => setEditIncome(e.target.value)}
+                className="mt-1 w-full px-2 py-1.5 text-xl font-bold text-green-600 border rounded-lg outline-none focus:border-green-400"
+              />
+            ) : (
+              <p className="text-2xl font-bold text-green-600 mt-1">
+                {todayStats.loading ? '...' : `¥${todayStats.income.toFixed(2)}`}
+              </p>
+            )}
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          统计当前账号今日已支付电影票订单（票数 + 实付金额）
+          统计所有账号今日已支付电影票订单（票数 + 实付金额，不含卖品/储值/退票）；手动编辑后与记账日历同步
         </p>
       </div>
 
