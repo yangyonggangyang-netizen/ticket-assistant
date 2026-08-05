@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, CalendarDays, Settings2, Save } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, CalendarDays, Settings2, Save, Pencil, Check, X } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
+import { loadOverrides, saveOverride, clearOverride } from '../store/ledgerOverride';
 
 // 固定卖价配置（localStorage 持久化，可编辑）
 const PRICES_KEY = 'ledger_prices';
@@ -24,10 +25,22 @@ function isJiahe(order: any): boolean {
   return name.includes('嘉和');
 }
 
-// 判断订单是否是电影票
+// 判断订单是否是「已支付的电影票订单」
+// 规则：type=1（电影票）+ status=7（已支付正常）+ 实付金额 >= 0
+// 排除：卖品(type=4)、储值(type=2)、会员扣费(type=12)、退款单(type=7/负金额)、退票取消(status=8)
 function isMovieOrder(order: any): boolean {
-  const type = String(order.type || order.orderType || order.saleType || '').toLowerCase();
-  if (type === '1' || type.includes('film') || type.includes('movie') || type.includes('ticket')) return true;
+  // 排除退款/取消：status=8 是已退票/取消
+  const status = Number(order.status ?? -1);
+  if (status === 8 || status === 0 || status === -1) return false;
+  // 排除负金额（退款单）
+  const pay = Number(order.pay_amount ?? order.payAmount ?? 0);
+  if (pay < 0) return false;
+  // 必须是 type=1 电影票
+  const type = String(order.type ?? order.orderType ?? order.saleType ?? '').toLowerCase();
+  if (type === '1' || type.includes('film') || type.includes('movie') || type.includes('ticket')) {
+    return true;
+  }
+  // 兜底：message 里有 filmName 且 type 不是卖品/储值
   try {
     const msg = typeof order.message === 'string' ? JSON.parse(order.message) : order.message;
     if (Array.isArray(msg)) {
@@ -160,6 +173,39 @@ export default function Ledger() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAccountId]);
 
+  // 手动覆盖数据（编辑过的日期，覆盖自动统计）
+  const [overrides, setOverrides] = useState<Record<string, { tickets: number; income: number; profit?: number }>>(loadOverrides);
+  // 正在编辑的日期
+  const [editingDate, setEditingDate] = useState<string>('');
+  const [editTickets, setEditTickets] = useState('');
+  const [editIncome, setEditIncome] = useState('');
+  const [editProfit, setEditProfit] = useState('');
+
+  const startEdit = (date: string, cur: { tickets: number; income: number; profit: number }) => {
+    setEditingDate(date);
+    setEditTickets(String(cur.tickets));
+    setEditIncome(String(cur.income));
+    setEditProfit(String(cur.profit));
+  };
+  const saveEdit = (date: string) => {
+    const tickets = Math.max(0, Number(editTickets) || 0);
+    const income = Number(editIncome) || 0;
+    const profit = Number(editProfit) || 0;
+    // 保存覆盖：tickets/income 手动值 + profit 手动值（利润单独存，避免被重算）
+    const all = loadOverrides();
+    all[date] = { tickets, income, profit };
+    localStorage.setItem('ledger_override', JSON.stringify(all));
+    setOverrides(all);
+    setEditingDate('');
+  };
+  const clearEdit = (date: string) => {
+    const all = loadOverrides();
+    delete all[date];
+    localStorage.setItem('ledger_override', JSON.stringify(all));
+    setOverrides(all);
+    setEditingDate('');
+  };
+
   // 按日期聚合电影票订单（含利润：固定卖价×张数 - 实付金额）
   const daily = useMemo(() => {
     const map = new Map<string, { tickets: number; income: number; count: number; profit: number; cost: number }>();
@@ -179,8 +225,18 @@ export default function Ledger() {
       cur.count += 1;
       map.set(d, cur);
     });
+    // 应用手动覆盖（编辑过的日期用手动值）
+    Object.entries(overrides).forEach(([date, ov]) => {
+      if (!map.has(date)) {
+        map.set(date, { tickets: 0, income: 0, count: 0, profit: 0, cost: 0 });
+      }
+      const cur = map.get(date)!;
+      cur.tickets = ov.tickets;
+      cur.income = ov.income;
+      if (ov.profit != null) cur.profit = ov.profit;
+    });
     return map;
-  }, [orders, prices]);
+  }, [orders, prices, overrides]);
 
   // 当月天数网格
   const days = useMemo(() => {
@@ -376,11 +432,12 @@ export default function Ledger() {
             const stat = daily.get(cell.date);
             const isToday = cell.date === todayStr;
             const isSelected = cell.date === selectedDay;
+            const isOverridden = !!overrides[cell.date];
             return (
               <button
                 key={cell.date}
                 onClick={() => setSelectedDay(isSelected ? '' : cell.date)}
-                className={`min-h-[76px] border-t border-r text-left p-1.5 transition-colors ${
+                className={`min-h-[76px] border-t border-r text-left p-1.5 transition-colors relative ${
                   isSelected ? 'bg-pink-50' : stat ? 'hover:bg-pink-50/40' : 'hover:bg-gray-50'
                 } ${i % 7 === 6 ? 'border-r-0' : ''}`}
               >
@@ -395,6 +452,7 @@ export default function Ledger() {
                   <div className="mt-1 space-y-0.5">
                     <p className="text-[10px] text-pink-600 font-medium flex items-center gap-0.5">
                       <Ticket className="w-3 h-3" /> {stat.tickets} 张
+                      {isOverridden && <span className="text-[8px] bg-pink-200 text-pink-700 rounded px-0.5">改</span>}
                     </p>
                     <p className="text-[10px] text-green-600 flex items-center gap-0.5">
                       <Banknote className="w-3 h-3" /> ¥{stat.income.toFixed(0)}
@@ -413,9 +471,21 @@ export default function Ledger() {
       {/* 选中日期的明细 */}
       {selectedDay && (
         <div className="bg-white rounded-lg border p-4">
-          <h3 className="text-sm font-medium mb-3">
-            {selectedDay} 出票明细（{selectedOrders.length} 笔）
-          </h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium">
+              {selectedDay} 出票明细（{selectedOrders.length} 笔）
+            </h3>
+            <button
+              onClick={() => {
+                const cur = daily.get(selectedDay) || { tickets: 0, income: 0, profit: 0 };
+                startEdit(selectedDay, cur);
+              }}
+              className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-purple-500 text-white rounded-lg hover:bg-purple-600"
+            >
+              <Pencil className="w-3 h-3" />
+              编辑当天
+            </button>
+          </div>
           {selectedOrders.length === 0 ? (
             <p className="text-sm text-gray-400">当天无电影票订单</p>
           ) : (
@@ -462,6 +532,74 @@ export default function Ledger() {
           )}
         </div>
       )}
+      {/* 编辑当天数据弹窗 */}
+      {editingDate && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setEditingDate('')}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-medium text-lg">编辑 {editingDate}</h3>
+            <p className="text-xs text-gray-400">
+              手动填写当天出票张数和收入（覆盖自动统计，与首页今日出票同步）。留空不填的项目保持自动值。
+            </p>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">出票张数</label>
+              <input
+                type="number"
+                value={editTickets}
+                onChange={(e) => setEditTickets(e.target.value)}
+                placeholder="自动统计的票数"
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">收入（元）</label>
+              <input
+                type="number"
+                step="0.01"
+                value={editIncome}
+                onChange={(e) => setEditIncome(e.target.value)}
+                placeholder="自动统计的收入"
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">利润（元，可留空）</label>
+              <input
+                type="number"
+                step="0.01"
+                value={editProfit}
+                onChange={(e) => setEditProfit(e.target.value)}
+                placeholder="自动统计的利润"
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => saveEdit(editingDate)}
+                className="flex-1 flex items-center justify-center gap-1 px-4 py-2 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600"
+              >
+                <Check className="w-4 h-4" />
+                确认保存
+              </button>
+              {overrides[editingDate] && (
+                <button
+                  onClick={() => clearEdit(editingDate)}
+                  className="px-4 py-2 text-sm bg-red-50 text-red-600 rounded-lg hover:bg-red-100"
+                >
+                  恢复自动
+                </button>
+              )}
+              <button
+                onClick={() => setEditingDate('')}
+                className="flex items-center gap-1 px-3 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
+              >
+                <X className="w-3.5 h-3.5" />
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 固定卖价设置弹窗 */}
       {showPriceEdit && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setShowPriceEdit(false)}>
