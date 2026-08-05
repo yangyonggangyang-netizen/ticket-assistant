@@ -360,7 +360,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           <div className="bg-green-50 rounded-lg p-4">
             <p className="text-xs text-green-600 flex items-center gap-1">
               <Banknote className="w-3.5 h-3.5" />
-              今日买票收入（实付，元）
+              今日电影票实付（元）
             </p>
             {editing ? (
               <input
@@ -397,7 +397,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          买票收入 = 实付金额总和；利润 = 固定卖价×票数（金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}）− 实付；只统计成功电影票订单，不含卖品/退票/储值；手动编辑后与记账日历同步
+          电影票实付 = 成功电影票订单实付金额总和；利润 = 固定卖价×票数（金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}）− 实付；只统计成功订单，不含卖品/退票/储值；手动编辑后与记账日历同步
         </p>
       </div>
 
