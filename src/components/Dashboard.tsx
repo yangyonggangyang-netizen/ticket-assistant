@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User, CalendarDays, Banknote, Pencil, Check, X } from 'lucide-react';
+import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User, CalendarDays, Banknote, Pencil, Check, X, TrendingUp } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import { loadOverrides, saveOverride } from '../store/ledgerOverride';
@@ -28,11 +28,12 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const [movies, setMovies] = useState<any[]>([]);
   const [movieCount, setMovieCount] = useState(0);
   const [loadingMovies, setLoadingMovies] = useState(false);
-  const [todayStats, setTodayStats] = useState<{ count: number; income: number; loading: boolean }>({ count: 0, income: 0, loading: false });
+  const [todayStats, setTodayStats] = useState<{ count: number; income: number; cost: number; loading: boolean }>({ count: 0, income: 0, cost: 0, loading: false });
   const [todayOverridden, setTodayOverridden] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editTickets, setEditTickets] = useState('');
   const [editIncome, setEditIncome] = useState('');
+  const [editProfit, setEditProfit] = useState('');
   const [todayStr] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -42,7 +43,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const refreshOverride = () => {
     const ov = loadOverrides();
     if (ov[todayStr]) {
-      setTodayStats((s) => ({ ...s, count: ov[todayStr].tickets, income: ov[todayStr].income, loading: false }));
+      setTodayStats((s) => ({ ...s, count: ov[todayStr].tickets, income: ov[todayStr].income, cost: 0, loading: false }));
       setTodayOverridden(true);
     } else {
       setTodayOverridden(false);
@@ -121,10 +122,11 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         }
       }
       // 统计今日成功电影票订单：只算 type=1 + status=7 + 金额>=0（排除卖品/储值/退票/退款）
-      // 收入 = 固定卖价 × 票数（金逸30/嘉和25，与记账日历一致）
+      // 收入(营业额) = 固定卖价 × 票数；成本 = 实付金额；纯利 = 收入 - 成本
       const prices = loadPrices();
       let count = 0;
       let income = 0;
+      let cost = 0;
       all.forEach((o: any) => {
         // create_time 可能是毫秒时间戳（如 1772606552000）或日期字符串，统一转成 yyyy-mm-dd
         const raw = o.create_time ?? o.createTime ?? '';
@@ -155,8 +157,9 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi;
         count += n;
         income += unitPrice * n; // 收入 = 固定卖价 × 票数
+        cost += payAmount; // 成本 = 实付金额
       });
-      setTodayStats({ count, income, loading: false });
+      setTodayStats({ count, income, cost, loading: false });
       setTodayOverridden(false);
     } catch (e) {
       console.error('Failed to load today stats:', e);
@@ -168,13 +171,15 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const startEdit = () => {
     setEditTickets(String(todayStats.count));
     setEditIncome(String(todayStats.income));
+    setEditProfit(String(todayStats.income - todayStats.cost));
     setEditing(true);
   };
   const saveEdit = () => {
     const tickets = Math.max(0, Number(editTickets) || 0);
     const income = Number(editIncome) || 0;
-    saveOverride(todayStr, { tickets, income });
-    setTodayStats({ count: tickets, income, loading: false });
+    const profit = Number(editProfit) || 0;
+    saveOverride(todayStr, { tickets, income, profit });
+    setTodayStats({ count: tickets, income, cost: income - profit, loading: false });
     setTodayOverridden(true);
     setEditing(false);
   };
@@ -309,7 +314,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
             )}
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-3 gap-4">
           <div className="bg-pink-50 rounded-lg p-4">
             <p className="text-xs text-pink-600 flex items-center gap-1">
               <Ticket className="w-3.5 h-3.5" />
@@ -332,7 +337,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           <div className="bg-green-50 rounded-lg p-4">
             <p className="text-xs text-green-600 flex items-center gap-1">
               <Banknote className="w-3.5 h-3.5" />
-              今日收入（元）
+              今日收入（营业额，元）
             </p>
             {editing ? (
               <input
@@ -348,9 +353,28 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
               </p>
             )}
           </div>
+          <div className="bg-amber-50 rounded-lg p-4">
+            <p className="text-xs text-amber-600 flex items-center gap-1">
+              <TrendingUp className="w-3.5 h-3.5" />
+              今日纯利（元）
+            </p>
+            {editing ? (
+              <input
+                type="number"
+                step="0.01"
+                value={editProfit}
+                onChange={(e) => setEditProfit(e.target.value)}
+                className="mt-1 w-full px-2 py-1.5 text-xl font-bold text-amber-600 border rounded-lg outline-none focus:border-amber-400"
+              />
+            ) : (
+              <p className={`text-2xl font-bold mt-1 ${todayStats.income - todayStats.cost >= 0 ? 'text-amber-600' : 'text-red-600'}`}>
+                {todayStats.loading ? '...' : `${todayStats.income - todayStats.cost >= 0 ? '+' : ''}¥${(todayStats.income - todayStats.cost).toFixed(2)}`}
+              </p>
+            )}
+          </div>
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          统计所有账号今日成功电影票订单：票数合计 + 收入（固定卖价×票数，金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}），不含卖品/退票/储值；手动编辑后与记账日历同步
+          纯利 = 收入（固定卖价×票数，金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}）- 成本（实付金额）；只统计成功电影票订单，不含卖品/退票/储值；手动编辑后与记账日历同步
         </p>
       </div>
 
