@@ -28,7 +28,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const [movies, setMovies] = useState<any[]>([]);
   const [movieCount, setMovieCount] = useState(0);
   const [loadingMovies, setLoadingMovies] = useState(false);
-  const [todayStats, setTodayStats] = useState<{ count: number; orderCount: number; income: number; cost: number; loading: boolean }>({ count: 0, orderCount: 0, income: 0, cost: 0, loading: false });
+  const [todayStats, setTodayStats] = useState<{ count: number; orderCount: number; income: number; profit: number; loading: boolean }>({ count: 0, orderCount: 0, income: 0, profit: 0, loading: false });
   const [todayOverridden, setTodayOverridden] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editTickets, setEditTickets] = useState('');
@@ -44,7 +44,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const refreshOverride = () => {
     const ov = loadOverrides();
     if (ov[todayStr]) {
-      setTodayStats((s) => ({ ...s, count: ov[todayStr].tickets, income: ov[todayStr].income, cost: 0, loading: false }));
+      setTodayStats((s) => ({ ...s, count: ov[todayStr].tickets, income: ov[todayStr].income, profit: ov[todayStr].profit ?? 0, loading: false }));
       setTodayOverridden(true);
     } else {
       setTodayOverridden(false);
@@ -123,12 +123,12 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         }
       }
       // 统计今日成功电影票订单：只算 type=1 + status=7 + 金额>=0（排除卖品/储值/退票/退款）
-      // 出票张数 count / 订单数 orderCount / 收入(营业额)=固定卖价×票数 / 成本=实付 / 纯利=收入-成本
+      // 出票张数 count / 订单数 orderCount / 买票收入 income=实付总和 / 利润 profit=固定卖价×票数-实付
       const prices = loadPrices();
       let count = 0;
       let orderCount = 0;
       let income = 0;
-      let cost = 0;
+      let saleIncome = 0;
       all.forEach((o: any) => {
         // create_time 可能是毫秒时间戳（如 1772606552000）或日期字符串，统一转成 yyyy-mm-dd
         const raw = o.create_time ?? o.createTime ?? '';
@@ -159,10 +159,11 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi;
         count += n; // 出票张数
         orderCount += 1; // 订单数
-        income += unitPrice * n; // 收入 = 固定卖价 × 票数
-        cost += payAmount; // 成本 = 实付金额
+        income += payAmount; // 买票收入 = 实付总和
+        saleIncome += unitPrice * n; // 卖票收入（用于算利润）
       });
-      setTodayStats({ count, orderCount, income, cost, loading: false });
+      const profit = saleIncome - income; // 利润 = 卖价×票数 - 实付
+      setTodayStats({ count, orderCount, income, profit, loading: false });
       setTodayOverridden(false);
     } catch (e) {
       console.error('Failed to load today stats:', e);
@@ -175,7 +176,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
     setEditTickets(String(todayStats.count));
     setEditOrders(String(todayStats.orderCount));
     setEditIncome(String(todayStats.income));
-    setEditProfit(String(todayStats.income - todayStats.cost));
+    setEditProfit(String(todayStats.profit));
     setEditing(true);
   };
   const saveEdit = () => {
@@ -183,7 +184,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
     const income = Number(editIncome) || 0;
     const profit = Number(editProfit) || 0;
     saveOverride(todayStr, { tickets, income, profit });
-    setTodayStats({ count: tickets, orderCount: Number(editOrders) || 0, income, cost: income - profit, loading: false });
+    setTodayStats({ count: tickets, orderCount: Number(editOrders) || 0, income, profit, loading: false });
     setTodayOverridden(true);
     setEditing(false);
   };
@@ -359,7 +360,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           <div className="bg-green-50 rounded-lg p-4">
             <p className="text-xs text-green-600 flex items-center gap-1">
               <Banknote className="w-3.5 h-3.5" />
-              今日营业额（元）
+              今日买票收入（实付，元）
             </p>
             {editing ? (
               <input
@@ -389,14 +390,14 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
                 className="mt-1 w-full px-2 py-1.5 text-xl font-bold text-amber-600 border rounded-lg outline-none focus:border-amber-400"
               />
             ) : (
-              <p className={`text-2xl font-bold mt-1 ${todayStats.income - todayStats.cost >= 0 ? 'text-amber-600' : 'text-red-600'}`}>
-                {todayStats.loading ? '...' : `${todayStats.income - todayStats.cost >= 0 ? '+' : ''}¥${(todayStats.income - todayStats.cost).toFixed(2)}`}
+              <p className={`text-2xl font-bold mt-1 ${todayStats.profit >= 0 ? 'text-amber-600' : 'text-red-600'}`}>
+                {todayStats.loading ? '...' : `${todayStats.profit >= 0 ? '+' : ''}¥${todayStats.profit.toFixed(2)}`}
               </p>
             )}
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          利润 = 营业额（固定卖价×票数，金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}）− 成本（实付金额）；只统计成功电影票订单，不含卖品/退票/储值；手动编辑后与记账日历同步
+          买票收入 = 实付金额总和；利润 = 固定卖价×票数（金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}）− 实付；只统计成功电影票订单，不含卖品/退票/储值；手动编辑后与记账日历同步
         </p>
       </div>
 

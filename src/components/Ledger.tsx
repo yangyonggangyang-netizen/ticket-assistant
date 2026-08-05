@@ -110,6 +110,7 @@ export default function Ledger() {
     const d = new Date();
     return { y: d.getFullYear(), m: d.getMonth() }; // m: 0-11
   });
+  const [yearPickerOpen, setYearPickerOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string>('');
   const [prices, setPrices] = useState<LedgerPrices>(loadPrices);
   const [priceEdit, setPriceEdit] = useState<LedgerPrices>(loadPrices);
@@ -128,7 +129,7 @@ export default function Ledger() {
     setTimeout(() => setPriceMsg(''), 2000);
   };
 
-  // 手动刷新：拉取所有已登录账号的订单（成功后缓存，刷新/切换后仍保留）
+  // 手动刷新：拉取所有已登录账号的【全部】订单（分页拉完，不遗漏深层订单；成功后缓存）
   const loadOrders = async () => {
     const targetAccounts = accounts.filter((a) => a.token && a.memberId);
     if (targetAccounts.length === 0) {
@@ -139,20 +140,27 @@ export default function Ledger() {
     setError('');
     try {
       let all: any[] = [];
-      // 每个账号最多拉 3 页（300 条），按账号顺序合并
+      let hasError = false;
+      // 每个账号循环拉所有页，直到拉完 total 或返回空
       for (const acc of targetAccounts) {
-        for (let page = 1; page <= 3; page++) {
-          const resp = await api.getOrderListAs(acc.token, acc.memberId, page, 100);
+        let page = 1;
+        const pageSize = 100;
+        for (;;) {
+          const resp = await api.getOrderListAs(acc.token, acc.memberId, page, pageSize);
           if (!resp.success) {
             setError((resp.message || '拉取订单失败') + `（账号：${acc.name || acc.phone}）`);
+            hasError = true;
             break;
           }
           const data = resp.result as any;
           const list = Array.isArray(data) ? data : data?.records || [];
           if (list.length === 0) break;
           all = all.concat(list);
-          const total = data?.total;
-          if (total && all.length >= Number(total)) break;
+          const total = Number(data?.total ?? 0);
+          if (total > 0 && all.length >= total) break;
+          page += 1;
+          // 防止死循环，最多拉 200 页
+          if (page > 200) break;
         }
       }
       // 按时间倒序排序（新的在前）
@@ -166,6 +174,9 @@ export default function Ledger() {
       try {
         localStorage.setItem('ledger_orders_cache', JSON.stringify({ savedAt: Date.now(), orders: all }));
       } catch {}
+      if (!hasError && all.length > 0) {
+        setError('');
+      }
     } catch (e: any) {
       setError('加载失败：' + e.message);
     }
@@ -220,7 +231,7 @@ export default function Ledger() {
     setEditingDate('');
   };
 
-  // 按日期聚合电影票订单（含利润：固定卖价×张数 - 实付金额）
+  // 按日期聚合电影票订单：收入=实付总和；利润=固定卖价×张数-实付
   const daily = useMemo(() => {
     const map = new Map<string, { tickets: number; income: number; count: number; profit: number; cost: number }>();
     orders.forEach((o) => {
@@ -231,11 +242,11 @@ export default function Ledger() {
       const n = orderTickets(o);
       const amount = orderAmount(o);
       const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi; // 卖价按影院
-      const income = unitPrice * n; // 卖票收入
+      const saleIncome = unitPrice * n; // 卖票收入（客户付的钱）
       cur.tickets += n;
-      cur.income += income;
+      cur.income += amount; // 收入 = 实付总和
       cur.cost += amount; // 实际支付成本
-      cur.profit += income - amount; // 利润
+      cur.profit += saleIncome - amount; // 利润 = 卖价×张数 - 实付
       cur.count += 1;
       map.set(d, cur);
     });
@@ -387,7 +398,7 @@ export default function Ledger() {
             </div>
             <div>
               <p className="text-2xl font-bold text-pink-600">¥{yearStats.income.toFixed(0)}</p>
-              <p className="text-xs text-pink-500">卖票收入</p>
+              <p className="text-xs text-pink-500">实付合计</p>
             </div>
             <div>
               <p className={`text-2xl font-bold ${yearStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
@@ -408,7 +419,7 @@ export default function Ledger() {
             </div>
             <div>
               <p className="text-2xl font-bold text-green-600">¥{monthStats.income.toFixed(0)}</p>
-              <p className="text-xs text-green-500">卖票收入</p>
+              <p className="text-xs text-green-500">实付合计</p>
             </div>
             <div>
               <p className={`text-2xl font-bold ${monthStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
@@ -422,27 +433,74 @@ export default function Ledger() {
 
       {/* 日历 */}
       <div className="bg-white rounded-lg border">
-        <div className="flex items-center justify-between p-4 border-b">
-          <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-gray-100">
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <h3 className="font-medium">
-            {viewDate.y} 年 {viewDate.m + 1} 月
-          </h3>
-          <button onClick={nextMonth} className="p-2 rounded-lg hover:bg-gray-100">
-            <ChevronRight className="w-4 h-4" />
-          </button>
+        <div className="flex items-center justify-between p-4 border-b flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-gray-100" title="上个月">
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            {/* 年份选择 */}
+            <div className="relative">
+              <button
+                onClick={() => setYearPickerOpen(!yearPickerOpen)}
+                className="px-3 py-1.5 text-base font-bold rounded-lg hover:bg-gray-100 border"
+              >
+                {viewDate.y} 年 ▾
+              </button>
+              {yearPickerOpen && (
+                <div className="absolute z-30 mt-1 bg-white border rounded-lg shadow-lg p-2 w-32 grid grid-cols-3 gap-1 max-h-56 overflow-auto">
+                  {Array.from({ length: 30 }, (_, i) => new Date().getFullYear() - i).map((y) => (
+                    <button
+                      key={y}
+                      onClick={() => {
+                        setViewDate(({ m }) => ({ y, m }));
+                        setYearPickerOpen(false);
+                        setSelectedDay('');
+                      }}
+                      className={`px-2 py-1 text-sm rounded ${
+                        y === viewDate.y ? 'bg-pink-500 text-white' : 'hover:bg-gray-100'
+                      }`}
+                    >
+                      {y}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* 月份选择 */}
+            <div className="flex gap-0.5">
+              {Array.from({ length: 12 }, (_, i) => i).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => {
+                    setViewDate(({ y }) => ({ y, m }));
+                    setSelectedDay('');
+                  }}
+                  className={`px-2 py-1.5 text-xs rounded-lg ${
+                    m === viewDate.m ? 'bg-pink-500 text-white font-bold' : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {m + 1}月
+                </button>
+              ))}
+            </div>
+            <button onClick={nextMonth} className="p-2 rounded-lg hover:bg-gray-100" title="下个月">
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
+          <span className="text-sm text-gray-500">
+            {viewDate.y} 年 {viewDate.m + 1} 月出票记录
+          </span>
         </div>
-        <div className="grid grid-cols-7 border-b">
+        <div className="grid grid-cols-7 border-b bg-gray-50">
           {weekdays.map((w) => (
-            <div key={w} className="text-center text-xs text-gray-400 py-2">
+            <div key={w} className="text-center text-sm font-medium text-gray-500 py-2 border-r last:border-r-0">
               {w}
             </div>
           ))}
         </div>
         <div className="grid grid-cols-7">
           {days.map((cell, i) => {
-            if (!cell) return <div key={`empty-${i}`} className="min-h-[76px]" />;
+            if (!cell) return <div key={`empty-${i}`} className="min-h-[92px]" />;
             const stat = daily.get(cell.date);
             const isToday = cell.date === todayStr;
             const isSelected = cell.date === selectedDay;
@@ -451,27 +509,27 @@ export default function Ledger() {
               <button
                 key={cell.date}
                 onClick={() => setSelectedDay(isSelected ? '' : cell.date)}
-                className={`min-h-[76px] border-t border-r text-left p-1.5 transition-colors relative ${
+                className={`min-h-[92px] border-t border-r text-left p-2 transition-colors relative ${
                   isSelected ? 'bg-pink-50' : stat ? 'hover:bg-pink-50/40' : 'hover:bg-gray-50'
                 } ${i % 7 === 6 ? 'border-r-0' : ''}`}
               >
                 <span
-                  className={`inline-flex w-6 h-6 items-center justify-center rounded-full text-xs ${
-                    isToday ? 'bg-pink-500 text-white font-bold' : 'text-gray-600'
+                  className={`inline-flex w-7 h-7 items-center justify-center rounded-full text-sm ${
+                    isToday ? 'bg-pink-500 text-white font-bold' : 'text-gray-700'
                   }`}
                 >
                   {cell.day}
                 </span>
                 {stat && (
-                  <div className="mt-1 space-y-0.5">
-                    <p className="text-[10px] text-pink-600 font-medium flex items-center gap-0.5">
-                      <Ticket className="w-3 h-3" /> {stat.tickets} 张
-                      {isOverridden && <span className="text-[8px] bg-pink-200 text-pink-700 rounded px-0.5">改</span>}
+                  <div className="mt-1.5 space-y-1">
+                    <p className="text-xs text-pink-600 font-semibold flex items-center gap-1">
+                      <Ticket className="w-3.5 h-3.5" /> {stat.tickets} 张
+                      {isOverridden && <span className="text-[9px] bg-pink-200 text-pink-700 rounded px-1">改</span>}
                     </p>
-                    <p className="text-[10px] text-green-600 flex items-center gap-0.5">
-                      <Banknote className="w-3 h-3" /> ¥{stat.income.toFixed(0)}
+                    <p className="text-xs text-green-600 font-medium flex items-center gap-1">
+                      <Banknote className="w-3.5 h-3.5" /> ¥{stat.income.toFixed(0)}
                     </p>
-                    <p className={`text-[10px] flex items-center gap-0.5 ${stat.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    <p className={`text-xs flex items-center gap-1 ${stat.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                       {stat.profit >= 0 ? '▲' : '▼'} {stat.profit >= 0 ? '+' : ''}¥{stat.profit.toFixed(0)}
                     </p>
                   </div>
