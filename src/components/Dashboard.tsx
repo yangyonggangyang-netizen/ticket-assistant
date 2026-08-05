@@ -61,8 +61,22 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
       let count = 0;
       let income = 0;
       all.forEach((o: any) => {
-        const createTime = o.create_time || o.createTime || '';
-        if (!createTime || !createTime.startsWith(todayStr)) return;
+        // create_time 可能是毫秒时间戳（如 1772606552000）或日期字符串，统一转成 yyyy-mm-dd
+        const raw = o.create_time ?? o.createTime ?? '';
+        let dayStr = '';
+        if (raw !== '' && raw != null) {
+          if (typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(raw))) {
+            const d = new Date(Number(raw));
+            if (!isNaN(d.getTime())) {
+              dayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            }
+          } else {
+            const s = String(raw);
+            const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (m) dayStr = `${m[1]}-${m[2]}-${m[3]}`;
+          }
+        }
+        if (dayStr !== todayStr) return;
         // type 1 = 电影票
         const type = Number(o.type ?? o.order_type ?? 1);
         if (type !== 1) return;

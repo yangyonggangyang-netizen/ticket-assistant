@@ -39,10 +39,19 @@ function isMovieOrder(order: any): boolean {
   }
 }
 
-// 取订单日期 yyyy-mm-dd
+// 取订单日期 yyyy-mm-dd（create_time 可能是毫秒时间戳或日期字符串）
 function orderDate(order: any): string {
-  const t = order.create_time || order.createTime || order.payTime || '';
-  if (!t) return '';
+  const t = order.create_time ?? order.createTime ?? order.payTime ?? '';
+  if (t === '' || t == null) return '';
+  // 毫秒时间戳（数字或纯数字字符串）
+  if (typeof t === 'number' || (typeof t === 'string' && /^\d+$/.test(t))) {
+    const d = new Date(Number(t));
+    if (!isNaN(d.getTime())) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+    return '';
+  }
   const s = String(t);
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
