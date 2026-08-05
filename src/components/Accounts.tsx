@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check, RefreshCw, BookMarked, Search, ArrowUpDown, ArrowUp, ArrowDown, ListChecks } from 'lucide-react';
+import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check, RefreshCw, BookMarked, Search, ArrowUpDown, ArrowUp, ArrowDown, ListChecks, Wallet, Star, Ticket } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api, localApi } from '../api/client';
 import type { Account } from '../types';
@@ -617,6 +617,43 @@ export default function Accounts() {
             <Plus className="w-4 h-4" />
             手动添加
           </button>
+        </div>
+      </div>
+
+      {/* 账号汇总统计（总余额/总积分/总券码） */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-emerald-50 rounded-lg border border-emerald-200 p-4">
+          <p className="text-xs text-emerald-600 font-medium flex items-center gap-1">
+            <Wallet className="w-3.5 h-3.5" /> 总余额
+          </p>
+          <p className="text-2xl font-bold text-emerald-600 mt-1">
+            ¥{accounts.reduce((s, a) => s + (Number(a.balance) || 0), 0).toFixed(2)}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            {accounts.filter((a) => Number(a.balance) > 0).length} 个账号有余额
+          </p>
+        </div>
+        <div className="bg-orange-50 rounded-lg border border-orange-200 p-4">
+          <p className="text-xs text-orange-600 font-medium flex items-center gap-1">
+            <Star className="w-3.5 h-3.5" /> 总积分
+          </p>
+          <p className="text-2xl font-bold text-orange-600 mt-1">
+            {accounts.reduce((s, a) => s + (Number(a.score) || 0), 0).toLocaleString()}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            {accounts.filter((a) => Number(a.score) > 0).length} 个账号有积分
+          </p>
+        </div>
+        <div className="bg-purple-50 rounded-lg border border-purple-200 p-4">
+          <p className="text-xs text-purple-600 font-medium flex items-center gap-1">
+            <Ticket className="w-3.5 h-3.5" /> 总券码
+          </p>
+          <p className="text-2xl font-bold text-purple-600 mt-1">
+            {accounts.reduce((s, a) => s + (Number(a.voucherNum) || 0), 0)}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            {accounts.filter((a) => Number(a.voucherNum) > 0).length} 个账号有券
+          </p>
         </div>
       </div>
 
