@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User, CalendarDays, Banknote, Pencil, Check, X, TrendingUp } from 'lucide-react';
+import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User, CalendarDays, Banknote, Pencil, Check, X, TrendingUp, ClipboardList } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import { loadOverrides, saveOverride } from '../store/ledgerOverride';
@@ -28,10 +28,11 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const [movies, setMovies] = useState<any[]>([]);
   const [movieCount, setMovieCount] = useState(0);
   const [loadingMovies, setLoadingMovies] = useState(false);
-  const [todayStats, setTodayStats] = useState<{ count: number; income: number; cost: number; loading: boolean }>({ count: 0, income: 0, cost: 0, loading: false });
+  const [todayStats, setTodayStats] = useState<{ count: number; orderCount: number; income: number; cost: number; loading: boolean }>({ count: 0, orderCount: 0, income: 0, cost: 0, loading: false });
   const [todayOverridden, setTodayOverridden] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editTickets, setEditTickets] = useState('');
+  const [editOrders, setEditOrders] = useState('');
   const [editIncome, setEditIncome] = useState('');
   const [editProfit, setEditProfit] = useState('');
   const [todayStr] = useState(() => {
@@ -122,9 +123,10 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         }
       }
       // 统计今日成功电影票订单：只算 type=1 + status=7 + 金额>=0（排除卖品/储值/退票/退款）
-      // 收入(营业额) = 固定卖价 × 票数；成本 = 实付金额；纯利 = 收入 - 成本
+      // 出票张数 count / 订单数 orderCount / 收入(营业额)=固定卖价×票数 / 成本=实付 / 纯利=收入-成本
       const prices = loadPrices();
       let count = 0;
+      let orderCount = 0;
       let income = 0;
       let cost = 0;
       all.forEach((o: any) => {
@@ -155,11 +157,12 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         if (payAmount < 0) return;
         const n = orderTickets(o);
         const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi;
-        count += n;
+        count += n; // 出票张数
+        orderCount += 1; // 订单数
         income += unitPrice * n; // 收入 = 固定卖价 × 票数
         cost += payAmount; // 成本 = 实付金额
       });
-      setTodayStats({ count, income, cost, loading: false });
+      setTodayStats({ count, orderCount, income, cost, loading: false });
       setTodayOverridden(false);
     } catch (e) {
       console.error('Failed to load today stats:', e);
@@ -170,6 +173,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   // 手动编辑今日出票（与记账日历同步）
   const startEdit = () => {
     setEditTickets(String(todayStats.count));
+    setEditOrders(String(todayStats.orderCount));
     setEditIncome(String(todayStats.income));
     setEditProfit(String(todayStats.income - todayStats.cost));
     setEditing(true);
@@ -179,7 +183,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
     const income = Number(editIncome) || 0;
     const profit = Number(editProfit) || 0;
     saveOverride(todayStr, { tickets, income, profit });
-    setTodayStats({ count: tickets, income, cost: income - profit, loading: false });
+    setTodayStats({ count: tickets, orderCount: Number(editOrders) || 0, income, cost: income - profit, loading: false });
     setTodayOverridden(true);
     setEditing(false);
   };
@@ -314,7 +318,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
             )}
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-4 gap-4">
           <div className="bg-pink-50 rounded-lg p-4">
             <p className="text-xs text-pink-600 flex items-center gap-1">
               <Ticket className="w-3.5 h-3.5" />
@@ -334,10 +338,28 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
               </p>
             )}
           </div>
+          <div className="bg-indigo-50 rounded-lg p-4">
+            <p className="text-xs text-indigo-600 flex items-center gap-1">
+              <ClipboardList className="w-3.5 h-3.5" />
+              今日订单（笔）
+            </p>
+            {editing ? (
+              <input
+                type="number"
+                value={editOrders}
+                onChange={(e) => setEditOrders(e.target.value)}
+                className="mt-1 w-full px-2 py-1.5 text-xl font-bold text-indigo-600 border rounded-lg outline-none focus:border-indigo-400"
+              />
+            ) : (
+              <p className="text-2xl font-bold text-indigo-600 mt-1">
+                {todayStats.loading ? '...' : todayStats.orderCount}
+              </p>
+            )}
+          </div>
           <div className="bg-green-50 rounded-lg p-4">
             <p className="text-xs text-green-600 flex items-center gap-1">
               <Banknote className="w-3.5 h-3.5" />
-              今日收入（营业额，元）
+              今日营业额（元）
             </p>
             {editing ? (
               <input
@@ -356,7 +378,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           <div className="bg-amber-50 rounded-lg p-4">
             <p className="text-xs text-amber-600 flex items-center gap-1">
               <TrendingUp className="w-3.5 h-3.5" />
-              今日纯利（元）
+              今日利润（元）
             </p>
             {editing ? (
               <input
@@ -374,7 +396,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          纯利 = 收入（固定卖价×票数，金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}）- 成本（实付金额）；只统计成功电影票订单，不含卖品/退票/储值；手动编辑后与记账日历同步
+          利润 = 营业额（固定卖价×票数，金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}）− 成本（实付金额）；只统计成功电影票订单，不含卖品/退票/储值；手动编辑后与记账日历同步
         </p>
       </div>
 

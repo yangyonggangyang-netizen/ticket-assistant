@@ -128,7 +128,7 @@ export default function Ledger() {
     setTimeout(() => setPriceMsg(''), 2000);
   };
 
-  // 手动刷新：拉取所有已登录账号的订单（不自动加载，避免一直转圈）
+  // 手动刷新：拉取所有已登录账号的订单（成功后缓存，刷新/切换后仍保留）
   const loadOrders = async () => {
     const targetAccounts = accounts.filter((a) => a.token && a.memberId);
     if (targetAccounts.length === 0) {
@@ -162,6 +162,10 @@ export default function Ledger() {
         return tb - ta;
       });
       setOrders(all);
+      // 缓存到 localStorage（刷新/切换页面后仍保留，下次进入先用缓存显示）
+      try {
+        localStorage.setItem('ledger_orders_cache', JSON.stringify({ savedAt: Date.now(), orders: all }));
+      } catch {}
     } catch (e: any) {
       setError('加载失败：' + e.message);
     }
@@ -169,7 +173,16 @@ export default function Ledger() {
   };
 
   useEffect(() => {
-    // 进入页面自动加载一次（不实时刷新、不转圈），手动刷新按钮可再拉
+    // 先读缓存立即显示（不转圈），再后台静默刷新更新数据
+    try {
+      const raw = localStorage.getItem('ledger_orders_cache');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.orders) && parsed.orders.length > 0) {
+          setOrders(parsed.orders);
+        }
+      }
+    } catch {}
     loadOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
