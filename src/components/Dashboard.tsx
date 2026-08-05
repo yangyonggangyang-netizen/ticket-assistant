@@ -5,6 +5,23 @@ import { api } from '../api/client';
 import { loadOverrides, saveOverride } from '../store/ledgerOverride';
 import type { Page } from '../App';
 
+// 固定卖价（与记账日历一致，localStorage 持久化）
+const PRICES_KEY = 'ledger_prices';
+function loadPrices(): { jinyi: number; jiahe: number } {
+  try {
+    const raw = localStorage.getItem(PRICES_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      return { jinyi: Number(p.jinyi) || 30, jiahe: Number(p.jiahe) || 25 };
+    }
+  } catch {}
+  return { jinyi: 30, jiahe: 25 };
+}
+function isJiahe(order: any): boolean {
+  const name = String(order.cinema_name || order.cinemaName || '');
+  return name.includes('嘉和');
+}
+
 export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   const { accounts, activeAccountId, cinemas, selectedCinemaId, refreshActiveAccount, loading } = useStore();
   const account = accounts.find((a) => a.id === activeAccountId);
@@ -103,7 +120,9 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           if (total && all.length >= Number(total)) break;
         }
       }
-      // 统计今日已支付电影票订单（type=1 + status=7 + 金额>=0，排除卖品/储值/退票/退款）
+      // 统计今日成功电影票订单：只算 type=1 + status=7 + 金额>=0（排除卖品/储值/退票/退款）
+      // 收入 = 固定卖价 × 票数（金逸30/嘉和25，与记账日历一致）
+      const prices = loadPrices();
       let count = 0;
       let income = 0;
       all.forEach((o: any) => {
@@ -132,8 +151,10 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         // 排除负金额（退款单）
         const payAmount = Number(o.pay_amount ?? o.payAmount ?? 0);
         if (payAmount < 0) return;
-        count += orderTickets(o);
-        income += payAmount;
+        const n = orderTickets(o);
+        const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi;
+        count += n;
+        income += unitPrice * n; // 收入 = 固定卖价 × 票数
       });
       setTodayStats({ count, income, loading: false });
       setTodayOverridden(false);
@@ -329,7 +350,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          统计所有账号今日已支付电影票订单（票数 + 实付金额，不含卖品/储值/退票）；手动编辑后与记账日历同步
+          统计所有账号今日成功电影票订单：票数合计 + 收入（固定卖价×票数，金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}），不含卖品/退票/储值；手动编辑后与记账日历同步
         </p>
       </div>
 
