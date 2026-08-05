@@ -25,11 +25,11 @@ function isJiahe(order: any): boolean {
   return name.includes('嘉和');
 }
 
-// 订单成功状态判断：status=7 或 8 都算成功（电影票7、充值8），0/9/负数排除
+// 订单成功状态判断：只有 status=7（send_state=1）算成功！
+// 实测：status=7+send=1=成功；status=8+send=0=取消/未完成；status=9=退款
 function isSuccessOrder(order: any): boolean {
   const status = Number(order.status ?? -1);
-  if (status === 7 || status === 8) return true;
-  return false;
+  return status === 7;
 }
 
 // 判断订单是否是「成功的电影票订单」

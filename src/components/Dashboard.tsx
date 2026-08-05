@@ -149,9 +149,9 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         // 只统计电影票（type=1），排除卖品(4)/储值(2)/会员扣费(12)
         const type = Number(o.type ?? o.order_type ?? 0);
         if (type !== 1) return;
-        // 排除退票/取消（status=8）和待支付（0/-1）
+        // 排除退票/取消（status=8）和待支付（0/-1）；只有 status=7 算成功
         const status = Number(o.status ?? -1);
-        if (status === 8 || status === 0 || status === -1) return;
+        if (status !== 7) return;
         // 排除负金额（退款单）
         const payAmount = Number(o.pay_amount ?? o.payAmount ?? 0);
         if (payAmount < 0) return;
