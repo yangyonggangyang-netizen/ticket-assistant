@@ -1,6 +1,6 @@
 {
   "name": "movie-ticket-desktop",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "大埔嘉逸影联桌面客户端 - 多账号电影票出票管理",
   "main": "electron/main.js",
   "scripts": {
