@@ -34,26 +34,30 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   }, [selectedCinemaId]);
 
   useEffect(() => {
-    if (activeAccountId) {
+    // 今日出票统计所有账号，切账号不重新加载（避免一直转圈），手动刷新按钮可重新拉
+    if (accounts.length > 0) {
       loadTodayStats();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAccountId]);
+  }, []);
 
   const loadTodayStats = async () => {
     setTodayStats((s) => ({ ...s, loading: true }));
     try {
-      // 拉最近订单（多页，尽量覆盖今日订单）
+      // 拉所有已登录账号的最近订单（每账号最多 5 页）
       let all: any[] = [];
-      for (let page = 1; page <= 5; page++) {
-        const resp = await api.getOrderList(page, 50);
-        if (!resp.success) break;
-        const data = resp.result as any;
-        const list = Array.isArray(data) ? data : data?.records || [];
-        if (list.length === 0) break;
-        all = all.concat(list);
-        const total = data?.total;
-        if (total && all.length >= Number(total)) break;
+      const targetAccounts = accounts.filter((a) => a.token && a.memberId);
+      for (const acc of targetAccounts) {
+        for (let page = 1; page <= 5; page++) {
+          const resp = await api.getOrderListAs(acc.token, acc.memberId, page, 50);
+          if (!resp.success) break;
+          const data = resp.result as any;
+          const list = Array.isArray(data) ? data : data?.records || [];
+          if (list.length === 0) break;
+          all = all.concat(list);
+          const total = data?.total;
+          if (total && all.length >= Number(total)) break;
+        }
       }
       const today = new Date();
       const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;

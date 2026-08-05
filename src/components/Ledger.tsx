@@ -102,25 +102,39 @@ export default function Ledger() {
     setTimeout(() => setPriceMsg(''), 2000);
   };
 
+  // 手动刷新：拉取所有已登录账号的订单（不自动加载，避免一直转圈）
   const loadOrders = async () => {
-    if (!account) return;
+    const targetAccounts = accounts.filter((a) => a.token && a.memberId);
+    if (targetAccounts.length === 0) {
+      setError('没有可用账号，请先在账号管理添加');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       let all: any[] = [];
-      for (let page = 1; page <= 8; page++) {
-        const resp = await api.getOrderList(page, 100);
-        if (!resp.success) {
-          setError(resp.message || '拉取订单失败');
-          break;
+      // 每个账号最多拉 3 页（300 条），按账号顺序合并
+      for (const acc of targetAccounts) {
+        for (let page = 1; page <= 3; page++) {
+          const resp = await api.getOrderListAs(acc.token, acc.memberId, page, 100);
+          if (!resp.success) {
+            setError((resp.message || '拉取订单失败') + `（账号：${acc.name || acc.phone}）`);
+            break;
+          }
+          const data = resp.result as any;
+          const list = Array.isArray(data) ? data : data?.records || [];
+          if (list.length === 0) break;
+          all = all.concat(list);
+          const total = data?.total;
+          if (total && all.length >= Number(total)) break;
         }
-        const data = resp.result as any;
-        const list = Array.isArray(data) ? data : data?.records || [];
-        if (list.length === 0) break;
-        all = all.concat(list);
-        const total = data?.total;
-        if (total && all.length >= Number(total)) break;
       }
+      // 按时间倒序排序（新的在前）
+      all.sort((a, b) => {
+        const ta = Number(a.create_time ?? a.createTime ?? 0);
+        const tb = Number(b.create_time ?? b.createTime ?? 0);
+        return tb - ta;
+      });
       setOrders(all);
     } catch (e: any) {
       setError('加载失败：' + e.message);
@@ -129,7 +143,7 @@ export default function Ledger() {
   };
 
   useEffect(() => {
-    loadOrders();
+    // 不自动加载，进入页面显示提示，等用户点刷新
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAccountId]);
 
@@ -222,7 +236,7 @@ export default function Ledger() {
     setSelectedDay('');
   };
 
-  if (!account) {
+  if (!account && accounts.length === 0) {
     return <div className="p-6 text-center text-gray-400 py-12">请先添加账号</div>;
   }
 
@@ -240,7 +254,9 @@ export default function Ledger() {
             <CalendarDays className="w-5 h-5 text-pink-500" />
             记账日历
           </h2>
-          <p className="text-sm text-gray-500">{account.name} · 每日出票记录与利润</p>
+          <p className="text-sm text-gray-500">
+            {accounts.length > 0 ? `统计 ${accounts.length} 个账号 · 每日出票记录与利润` : '暂无账号'}
+          </p>
         </div>
         <div className="flex gap-2">
           <button
@@ -267,6 +283,13 @@ export default function Ledger() {
       )}
 
       {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>}
+
+      {/* 首次未加载提示 */}
+      {orders.length === 0 && !loading && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-700 text-center">
+          点击右上角「刷新」按钮加载所有账号的出票记录
+        </div>
+      )}
 
       {/* 年统计 + 月统计 */}
       <div className="grid grid-cols-2 gap-4">
