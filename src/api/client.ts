@@ -304,6 +304,10 @@ export const api = {
   cancelOrder: (orderId: string) =>
     post('/api/order/chanelOrder', { orderId }),
 
+  // 指定账号取消订单（一键释放未支付订单用）
+  cancelOrderAs: (token: string, memberId: string, orderId: string) =>
+    requestAs(token, memberId, 'POST', '/api/order/chanelOrder', { orderId }),
+
   // ===== Payment =====
   // 小程序用 getClientAction (GET)
   getTicketPayType: (filmScheduleId: string) =>
