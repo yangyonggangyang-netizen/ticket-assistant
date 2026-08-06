@@ -24,6 +24,7 @@ import {
   Copy,
   ImageDown,
   Save,
+  Unlock,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useStore } from '../store/useStore';
@@ -329,6 +330,8 @@ export default function Schedules() {
   } | null>(null);
   const [generating, setGenerating] = useState(false);
   const [posterPreview, setPosterPreview] = useState<string | null>(null);
+  // 一键释放未支付订单
+  const [releasing, setReleasing] = useState(false);
 
   const cinema = cinemas.find((c: Cinema) => c.id === selectedCinemaId);
 
@@ -470,6 +473,62 @@ export default function Schedules() {
     }
   };
 
+  // 一键释放：取消所有已登录账号的未支付电影票订单（status 1/2/3，锁定座位）
+  const releaseAllPendingOrders = async () => {
+    const targetAccounts = accounts.filter((a) => a.token && a.memberId);
+    if (targetAccounts.length === 0) {
+      showToast('没有可用账号');
+      return;
+    }
+    if (!confirm(`确定释放所有账号（${targetAccounts.length} 个）的未支付订单吗？\n\n将取消所有待支付/锁座的电影票订单，释放被占座位。`)) return;
+    setReleasing(true);
+    let found = 0;
+    let cancelled = 0;
+    let failed = 0;
+    try {
+      // 每个账号拉最近订单，找未支付电影票订单（type=1, status 1/2/3）
+      for (const acc of targetAccounts) {
+        let page = 1;
+        for (;;) {
+          const resp = await api.getOrderListAs(acc.token, acc.memberId, page, 100);
+          if (!resp.success) break;
+          const data = resp.result as any;
+          const list: any[] = Array.isArray(data) ? data : data?.records || [];
+          if (list.length === 0) break;
+          for (const o of list) {
+            const type = String(o.type ?? o.orderType ?? o.saleType ?? '');
+            const status = String(o.status);
+            if (type === '1' && ['1', '2', '3'].includes(status)) {
+              found += 1;
+              const orderId = o.id || o.orderId;
+              if (orderId) {
+                try {
+                  const cResp = await api.cancelOrderAs(acc.token, acc.memberId, orderId);
+                  if (cResp.success) {
+                    cancelled += 1;
+                  } else {
+                    failed += 1;
+                  }
+                } catch {
+                  failed += 1;
+                }
+              }
+            }
+          }
+          const total = Number(data?.total ?? 0);
+          if (total > 0 && page * 100 >= total) break;
+          page += 1;
+          if (page > 50) break;
+        }
+      }
+      showToast(`释放完成：发现 ${found} 笔未支付订单，成功取消 ${cancelled} 笔${failed ? `，失败 ${failed} 笔` : ''}`);
+    } catch (e: any) {
+      showToast('释放失败：' + e.message);
+    } finally {
+      setReleasing(false);
+    }
+  };
+
   const openSeat = async (schedule: Schedule) => {
     if (!schedule.scheduleId) return;
     setSeatModal({
@@ -550,6 +609,19 @@ export default function Schedules() {
             selectedId={selectedCinemaId}
             onChange={(id) => setSelectedCinema(id)}
           />
+          <button
+            onClick={releaseAllPendingOrders}
+            disabled={releasing}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50"
+            title="取消所有账号未支付的电影票订单，释放锁定的座位"
+          >
+            {releasing ? (
+              <Loader className="w-4 h-4 animate-spin" />
+            ) : (
+              <Unlock className="w-4 h-4" />
+            )}
+            {releasing ? '释放中...' : '一键释放'}
+          </button>
           <button
             onClick={generatePoster}
             disabled={generating}
