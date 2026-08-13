@@ -785,19 +785,37 @@ function FilmCard({
 }) {
   const posterUrl = group.poster ? POSTER_PREFIX + group.poster : null;
   const firstSchedule = group.schedules[0];
+  // 图片加载失败状态（不隐藏，显示占位并可重试）
+  const [posterFailed, setPosterFailed] = useState(false);
+  const [posterKey, setPosterKey] = useState(0);
 
   return (
     <div className="bg-white rounded-xl border p-4 flex gap-4">
       <div className="shrink-0">
         {posterUrl ? (
-          <img
-            src={posterUrl}
-            alt={group.filmName}
-            className="w-24 h-32 object-cover rounded-lg bg-gray-100"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = 'none';
-            }}
-          />
+          posterFailed ? (
+            <div className="w-24 h-32 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400 text-xs text-center px-2 flex-col gap-1">
+              暂无海报
+              <button
+                onClick={() => {
+                  setPosterFailed(false);
+                  setPosterKey((k) => k + 1);
+                }}
+                className="text-[10px] text-blue-500 hover:underline"
+              >
+                重试
+              </button>
+            </div>
+          ) : (
+            <img
+              key={posterKey}
+              src={posterUrl}
+              alt={group.filmName}
+              className="w-24 h-32 object-cover rounded-lg bg-gray-100"
+              loading="lazy"
+              onError={() => setPosterFailed(true)}
+            />
+          )
         ) : (
           <div className="w-24 h-32 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400 text-xs text-center px-2">
             暂无海报
@@ -879,35 +897,7 @@ function FilmCard({
 }
 
 function resolveSeatTypeColor(typeName: string): SeatColor {
-  const t = String(typeName || '').toLowerCase();
-  // 注意："猫眼独享.会员勿选" 里同时包含"猫眼"和"会员"，必须先判猫眼
-  if (t.includes('猫眼') || t.includes('maoyan')) {
-    return {
-      bg: 'bg-yellow-100',
-      border: 'border-yellow-400',
-      text: 'text-yellow-600',
-      icon: 'text-yellow-500',
-      solid: 'bg-yellow-400',
-    };
-  }
-  if (t.includes('会员') || t.includes('balance') || t.includes('vip')) {
-    return {
-      bg: 'bg-blue-100',
-      border: 'border-blue-400',
-      text: 'text-blue-600',
-      icon: 'text-blue-500',
-      solid: 'bg-blue-500',
-    };
-  }
-  if (t.includes('普通')) {
-    return {
-      bg: 'bg-gray-100',
-      border: 'border-gray-300',
-      text: 'text-gray-600',
-      icon: 'text-gray-500',
-      solid: 'bg-gray-500',
-    };
-  }
+  // 不区分猫眼/会员/普通，所有可售座位统一样式（影院已合并销售渠道）
   return {
     bg: 'bg-white',
     border: 'border-pink-300',
@@ -1237,8 +1227,8 @@ function SeatModal({
     setCalcAmount(null);
     setVoucherList([]);
     setOrderId('');
-    // 默认余额支付，并同时加载余额
-    setPayType('3');
+    // 默认余额支付（与小程序一致：balanceFlag=1 用 payType=3），并同时加载余额
+    setPayType(Number(schedule.balanceFlag) === 1 ? '3' : '2');
     loadMemberBalance();
 
     // 先创建订单，再加载可用优惠券/观影金
@@ -1255,7 +1245,8 @@ function SeatModal({
         price: totalPrice,
         type: 1,
         buyChannel: 1,
-        payType: 2,
+        // 与小程序一致：balanceFlag=1 用 payType=3（余额支付通道，购票送卖品券活动依赖此参数）
+        payType: Number(schedule.balanceFlag) === 1 ? 3 : 2,
         cinemaId,
         shopId: (cinema as any)?.shopId || '',
         phone: account?.phone || '',
@@ -1738,12 +1729,8 @@ function SeatModal({
                   {/* Legend */}
                   <div className="flex items-center justify-center gap-4 mb-4 text-xs flex-wrap">
                     <span className="flex items-center gap-1">
-                      <span className="w-5 h-5 rounded bg-blue-100 border border-blue-400" />
-                      会员独享
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <span className="w-5 h-5 rounded bg-yellow-100 border border-yellow-400" />
-                      猫眼独享
+                      <span className="w-5 h-5 rounded bg-white border border-pink-300" />
+                      可售
                     </span>
                     <span className="flex items-center gap-1">
                       <span className="w-5 h-5 rounded bg-red-500 border border-red-600" />
