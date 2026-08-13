@@ -560,23 +560,33 @@ export default function Schedules() {
         ),
       ]);
 
-      const priceResult = (priceResp.result as any[]) || [];
-      const typeList: SeatTypeInfo[] = priceResp.success
-        ? priceResult.map((t: any, idx: number) => ({
-            id: String(t.id || t.code || idx),
-            type: t.type || '普通座',
-            fee: Number(t.fee || 0),
-            specialPrice: Number(t.specialPrice ?? t.fee ?? 0),
-            color: resolveSeatTypeColor(t.type || ''),
-          }))
-        : [];
+      const priceResult = (priceResp.result as any) || [];
+      const priceList = Array.isArray(priceResult) ? priceResult : [];
+      // 价格接口返回 [{seatCode, specialPrice, type}]：优先按 seatCode 匹配，匹配不到用第一条作为全场基准价
+      const priceBySeat = new Map<string, number>();
+      let defaultPrice = 0;
+      priceList.forEach((p: any, idx: number) => {
+        const seatCode = String(p.seatCode || '');
+        const sp = Number(p.specialPrice ?? p.price ?? p.fee ?? 0);
+        if (idx === 0) defaultPrice = sp;
+        if (seatCode) priceBySeat.set(seatCode, sp);
+      });
+      const typeList: SeatTypeInfo[] = priceList.map((t: any, idx: number) => ({
+        id: String(t.seatCode || t.id || t.code || idx),
+        type: t.type || '普通座',
+        fee: Number(t.fee || 0),
+        specialPrice: Number(t.specialPrice ?? t.fee ?? 0) || defaultPrice,
+        color: resolveSeatTypeColor(t.type || ''),
+      }));
 
       const typeMap = new Map<string, SeatTypeInfo>();
       typeList.forEach((t) => typeMap.set(t.id, t));
 
       const normalized = normalizeSeats(
         seatResp.success ? seatResp.result || [] : [],
-        typeMap
+        typeMap,
+        priceBySeat,
+        defaultPrice
       );
 
       setSeatModal({
@@ -1810,9 +1820,6 @@ function SeatModal({
                               (s) => s.seatCode === seat.seatCode
                             );
                             const isLove = isCoupleSeat(seat, seats) || isMassageSeat(seat);
-                            const typeInfo = seatTypes.find(
-                              (t) => t.id === seat.type
-                            );
 
                             return (
                               <button
@@ -1831,8 +1838,9 @@ function SeatModal({
                                       ? 'bg-red-500 border border-red-600 cursor-not-allowed'
                                       : disabled
                                       ? 'bg-gray-300 border border-gray-400 cursor-not-allowed'
-                                      : typeInfo
-                                      ? `${typeInfo.color.bg} border ${typeInfo.color.border} hover:opacity-90`
+                                      // 可售座位统一白色（与猫眼一致）；情侣座保持粉色主题
+                                      : isLove
+                                      ? 'bg-pink-50 border border-pink-400 hover:bg-pink-100'
                                       : 'bg-white border border-pink-300 hover:bg-pink-50'
                                   }
                                 `}
@@ -1842,8 +1850,6 @@ function SeatModal({
                                     className={`w-4 h-4 ${
                                       isSelected || sold || disabled
                                         ? 'text-white'
-                                        : typeInfo
-                                        ? typeInfo.color.icon
                                         : 'text-pink-500'
                                     }`}
                                     strokeWidth={2}
@@ -1858,8 +1864,6 @@ function SeatModal({
                                     className={`text-xs font-medium ${
                                       isSelected || sold || disabled
                                         ? 'text-white'
-                                        : typeInfo
-                                        ? typeInfo.color.text
                                         : 'text-pink-500'
                                     }`}
                                   >
@@ -2307,15 +2311,25 @@ async function copyRegionToClipboard(element: HTMLElement) {
 
 function normalizeSeats(
   seats: any[],
-  typeMap: Map<string, SeatTypeInfo>
+  typeMap: Map<string, SeatTypeInfo>,
+  priceBySeat: Map<string, number> = new Map(),
+  defaultPrice: number = 0
 ): Seat[] {
   if (!Array.isArray(seats)) return [];
   const list = seats.map((s) => {
-    const typeInfo = typeMap.get(String(s.type || ''));
+    const seatCode = String(s.seatCode || '');
+    // 优先按 seatCode 匹配价格；匹配不到用全场基准价；再不行用 typeMap 或 fee
+    const seatPrice =
+      priceBySeat.get(seatCode) ??
+      defaultPrice ??
+      typeMap.get(String(s.type || ''))?.specialPrice ??
+      s.fee ??
+      0;
+    const typeInfo = typeMap.get(String(s.seatCode || s.type || ''));
     return {
       ...s,
-      price: typeInfo?.specialPrice || s.fee || 0,
-      specialPrice: typeInfo?.specialPrice || s.fee || 0,
+      price: seatPrice,
+      specialPrice: seatPrice,
       seatTypeName: typeInfo?.type,
     } as Seat;
   });
@@ -2332,11 +2346,13 @@ function isSoldSeat(seat: Seat): boolean {
   if (seat.seatStatus && seat.seatStatus !== '0') return true;
   if (seat.ticketState && seat.ticketState !== '0') return true;
   if (seat.isChoosed === true) return true;
+  // canSale=0 = 已售/不可售（影院接口用 canSale 标记已售座位）
+  if (seat.canSale === '0' || seat.canSale === 0) return true;
   return false;
 }
 
 function isDisabledSeat(seat: Seat): boolean {
-  if (seat.canSale === '0' || seat.canSale === 0) return true;
+  if (seat.canSale === '-1' || seat.canSale === -1) return true; // 停用（走道/无座位）
   if (seat.isCanBuy === false) return true;
   return false;
 }
