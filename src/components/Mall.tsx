@@ -463,7 +463,16 @@ export default function Mall() {
       const resp = await api.ticketMessage(id);
       if (resp.success && resp.result) {
         const o = resp.result as any;
-        let code = String(o.pickupCode || o.verify_code || o.ticketCode || '');
+        // 积分兑换卖品：取货码在 takeCode（如 7174）；电影票在 verify_code/print_no
+        let code = String(
+          o.pickupCode ||
+          o.takeCode ||
+          o.verify_code ||
+          o.ticketCode ||
+          o.printNo ||
+          o.print_no ||
+          ''
+        );
         const cards = o.cardGoodsCode || o.ticketCodes || [];
         if (!code && Array.isArray(cards) && cards.length > 0) {
           code = String(cards.map((c: any) => c.ticketCode || c.code || c).filter(Boolean).join(','));
