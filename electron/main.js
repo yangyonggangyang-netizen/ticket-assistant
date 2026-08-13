@@ -346,7 +346,7 @@ function createWindow() {
     },
   });
 
-  // Handle CORS
+  // Handle CORS（所有响应加 CORS 头；canvas 海报 crossOrigin 加载依赖它，且不破坏 img 渲染）
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const headers = details.responseHeaders || {};
     headers['access-control-allow-origin'] = ['*'];

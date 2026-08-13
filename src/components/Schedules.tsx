@@ -83,7 +83,7 @@ function formatTime(dateInput: string | Date | number): string {
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    // 不设 crossOrigin：图片只在本地 canvas 展示，避免跨域加载失败导致海报不显示
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error('load failed'));
     img.src = url;
@@ -783,7 +783,13 @@ function FilmCard({
   group: FilmGroup;
   onSelectTime: (s: Schedule) => void;
 }) {
-  const posterUrl = group.poster ? POSTER_PREFIX + group.poster : null;
+  // 海报 URL：兼容相对路径(files/...)和完整URL，加时间戳防缓存
+  const posterUrl = useMemo(() => {
+    if (!group.poster) return null;
+    const raw = String(group.poster);
+    const base = raw.startsWith('http') ? raw : POSTER_PREFIX + raw;
+    return base + (base.includes('?') ? '&' : '?') + 't=' + Date.now();
+  }, [group.poster]);
   const firstSchedule = group.schedules[0];
   // 图片加载失败状态（不隐藏，显示占位并可重试）
   const [posterFailed, setPosterFailed] = useState(false);
