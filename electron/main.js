@@ -343,10 +343,14 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // 关闭 webSecurity：file:// 页面跨域请求后端 API（POST/GET）不拦截，
+      // 修复"排期电影海报不显示"（getNowPlayMovies 的 POST 请求被 CORS 拦截导致 movieMap 空）
+      webSecurity: false,
+      allowRunningInsecureContent: true,
     },
   });
 
-  // Handle CORS（所有响应加 CORS 头；canvas 海报 crossOrigin 加载依赖它，且不破坏 img 渲染）
+  // Handle CORS（webSecurity 已关闭，这里保留 CORS 头兜底，保证 canvas 海报 crossOrigin 可用）
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const headers = details.responseHeaders || {};
     headers['access-control-allow-origin'] = ['*'];

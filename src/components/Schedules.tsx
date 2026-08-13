@@ -388,21 +388,34 @@ export default function Schedules() {
     if (!selectedCinemaId) return;
     setLoading(true);
     try {
-      const [scheduleResp, movieResp] = await Promise.all([
-        api.getScheduleAllFilm(selectedCinemaId),
-        api.getNowPlayMovies(selectedCinemaId, 1, 50),
-      ]);
+      // 排期接口 + 电影接口（电影接口失败时重试 1 次，保证海报数据）
+      let scheduleResp: any = null;
+      let movieResp: any = null;
+      try {
+        [scheduleResp, movieResp] = await Promise.all([
+          api.getScheduleAllFilm(selectedCinemaId),
+          api.getNowPlayMovies(selectedCinemaId, 1, 50),
+        ]);
+      } catch (e) {
+        // 并行失败时各自重试
+        scheduleResp = await api.getScheduleAllFilm(selectedCinemaId).catch(() => null);
+        movieResp = await api.getNowPlayMovies(selectedCinemaId, 1, 50).catch(() => null);
+      }
+      // 电影接口失败/空时重试一次（网络抖动或 token 短暂失效）
+      if (!movieResp || !movieResp.success || !((movieResp.result as any)?.records || []).length) {
+        movieResp = await api.getNowPlayMovies(selectedCinemaId, 1, 50).catch(() => movieResp);
+      }
 
-      const movieRecords = (movieResp.result as any)?.records || [];
+      const movieRecords = (movieResp?.result as any)?.records || [];
       const movieMap = new Map<string, Movie>();
-      if (movieResp.success && movieRecords) {
+      if (movieResp?.success && movieRecords) {
         movieRecords.forEach((m: Movie) => {
           if (m.code) movieMap.set(m.code, m);
         });
       }
       setMovies(movieRecords);
 
-      if (scheduleResp.success && scheduleResp.result) {
+      if (scheduleResp?.success && scheduleResp.result) {
         const scheduleResult = scheduleResp.result as any;
         const list: Schedule[] = Array.isArray(scheduleResult)
           ? scheduleResult
