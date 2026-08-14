@@ -16,6 +16,7 @@ import {
   X,
   Loader,
   Copy,
+  Building2,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useStore } from '../store/useStore';
@@ -93,7 +94,7 @@ export default function Mall() {
   const [memberViewAmount, setMemberViewAmount] = useState<number | null>(null);
   const [memberScore, setMemberScore] = useState<number | null>(null);
   const [orderId, setOrderId] = useState<string>('');
-  const [pickupInfo, setPickupInfo] = useState<{ verifyCode: string; goodsName: string } | null>(null);
+  const [pickupInfo, setPickupInfo] = useState<{ verifyCode: string; goodsName: string; cinemaName?: string; orderNo?: string } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 卖品优惠券/价格计算
@@ -463,7 +464,7 @@ export default function Mall() {
       const resp = await api.ticketMessage(id);
       if (resp.success && resp.result) {
         const o = resp.result as any;
-        // 积分兑换卖品：取货码在 takeCode（如 7174）；电影票在 verify_code/print_no
+        // 积分兑换卖品：取货码/券码在 takeCode（如 7174）；电影票在 verify_code/print_no
         let code = String(
           o.pickupCode ||
           o.takeCode ||
@@ -477,14 +478,24 @@ export default function Mall() {
         if (!code && Array.isArray(cards) && cards.length > 0) {
           code = String(cards.map((c: any) => c.ticketCode || c.code || c).filter(Boolean).join(','));
         }
+        // 套餐名称
         const goodsName =
           o.goodsName ||
           o.order?.goodsName ||
           (o.goodsList && o.goodsList[0]?.goodsName) ||
           (o.orderShopList && o.orderShopList[0]?.goodsName) ||
           '';
+        // 影城名称
+        const cinemaName =
+          o.cinemaInfo?.cinemaName ||
+          o.cinemaName ||
+          o.order?.cinemaName ||
+          o.cinemaInfo?.name ||
+          '';
+        // 订单号
+        const orderNo = String(o.order?.orderNo || o.orderNo || o.order?.id || o.orderId || id || '');
         if (code) {
-          setPickupInfo({ verifyCode: code, goodsName });
+          setPickupInfo({ verifyCode: code, goodsName, cinemaName, orderNo });
         } else if (attempts < 3) {
           setTimeout(() => fetchPickupInfo(id, attempts + 1), 2000);
         }
@@ -1480,15 +1491,27 @@ export default function Mall() {
 
                   {pickupInfo?.verifyCode ? (
                     <div className="w-full border-t pt-4 text-center space-y-3">
-                      <p className="text-sm text-gray-500">取货码</p>
+                      {/* 影城名称 */}
+                      {pickupInfo.cinemaName && (
+                        <div className="flex items-center justify-center gap-1.5">
+                          <Building2 className="w-4 h-4 text-pink-500" />
+                          <p className="text-base font-semibold text-gray-800">{pickupInfo.cinemaName}</p>
+                        </div>
+                      )}
+                      {/* 套餐名称 */}
+                      {pickupInfo.goodsName && (
+                        <p className="text-sm text-gray-600">{pickupInfo.goodsName}</p>
+                      )}
+                      {/* 券码/取货码 */}
+                      <p className="text-sm text-gray-500">券码 / 取货码</p>
                       <div className="flex items-center justify-center gap-2">
-                        <p className="text-2xl font-mono font-medium tracking-wider">
+                        <p className="text-2xl font-mono font-bold tracking-widest text-gray-900">
                           {pickupInfo.verifyCode.replace(/\s/g, '').replace(/(\d{4})(?=\d)/g, '$1 ').trim()}
                         </p>
                         <button
                           onClick={() => {
                             navigator.clipboard.writeText(pickupInfo.verifyCode);
-                            setPayMessage('取货码已复制');
+                            setPayMessage('券码已复制');
                             setTimeout(() => setPayMessage('支付成功！'), 2000);
                           }}
                           className="p-1.5 text-gray-400 hover:text-pink-500"
@@ -1497,11 +1520,12 @@ export default function Mall() {
                           <Copy className="w-4 h-4" />
                         </button>
                       </div>
-                      <div className="flex justify-center">
+                      {/* 二维码 */}
+                      <div className="flex justify-center bg-white p-3 rounded-xl border">
                         <QRCodeSVG value={pickupInfo.verifyCode} size={180} level="M" />
                       </div>
-                      {pickupInfo.goodsName && (
-                        <p className="text-sm text-gray-600">{pickupInfo.goodsName}</p>
+                      {pickupInfo.orderNo && (
+                        <p className="text-xs text-gray-400">订单号：{pickupInfo.orderNo}</p>
                       )}
                     </div>
                   ) : (

@@ -316,6 +316,8 @@ export default function Schedules() {
   const [filmGroups, setFilmGroups] = useState<FilmGroup[]>([]);
   const [movies, setMovies] = useState<Movie[]>([]);
   const [loading, setLoading] = useState(false);
+  // 每个场次已出票数（当前账号，scheduleId -> 张数），每场限 6 张
+  const [scheduleQuota, setScheduleQuota] = useState<Map<string, number>>(new Map());
   const schedulesRef = useRef<HTMLDivElement>(null);
   const [toast, setToast] = useState<{ message: string; visible: boolean }>({
     message: '',
@@ -450,6 +452,35 @@ export default function Schedules() {
       }
     } catch (e) {
       console.error('Failed to load schedules:', e);
+    }
+    // 加载当前账号每个场次的已出票数（每场限 6 张）
+    try {
+      const quotaMap = new Map<string, number>();
+      // 拉最近订单分页统计（成功电影票 type=1 status=7）
+      const listResp = await api.getOrderList(1, 100);
+      if (listResp.success && listResp.result) {
+        const data = listResp.result as any;
+        const list: any[] = Array.isArray(data) ? data : data.records || [];
+        list.forEach((o: any) => {
+          const type = String(o.type ?? o.orderType ?? o.saleType ?? '');
+          const status = String(o.status);
+          if (type === '1' && status === '7') {
+            const sid = String(o.schedule_id || o.scheduleId || o.filmScheduleId || '');
+            if (sid) {
+              // 张数在 message.num
+              let num = 1;
+              try {
+                const mm = typeof o.message === 'string' ? JSON.parse(o.message) : o.message;
+                if (mm && typeof mm === 'object') num = Number(mm.num) || 1;
+              } catch {}
+              quotaMap.set(sid, (quotaMap.get(sid) || 0) + num);
+            }
+          }
+        });
+      }
+      setScheduleQuota(quotaMap);
+    } catch (e) {
+      console.error('Failed to load schedule quota:', e);
     }
     setLoading(false);
   };
@@ -688,6 +719,7 @@ export default function Schedules() {
               key={group.filmCode}
               group={group}
               onSelectTime={openSeat}
+              scheduleQuota={scheduleQuota}
             />
           ))
         )}
@@ -702,6 +734,7 @@ export default function Schedules() {
           onToast={showToast}
           onRefresh={() => openSeat(seatModal.schedule)}
           refreshing={seatModal.loading}
+          scheduleQuota={scheduleQuota}
         />
       )}
 
@@ -802,9 +835,12 @@ function CinemaSelector({
 function FilmCard({
   group,
   onSelectTime,
+  scheduleQuota,
 }: {
   group: FilmGroup;
   onSelectTime: (s: Schedule) => void;
+  // 每个场次已出票数（当前账号），用于显示"已出 X/6 张"限制
+  scheduleQuota?: Map<string, number>;
 }) {
   // 海报 URL：兼容相对路径(files/...)和完整URL，加时间戳防缓存
   const posterUrl = useMemo(() => {
@@ -876,23 +912,32 @@ function FilmCard({
                   {label.text}场次：
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {list.map((s, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => onSelectTime(s)}
-                      disabled={s.canSale === false}
-                      className={`
-                        px-3 py-1.5 text-sm rounded border transition-colors
-                        ${
-                          s.canSale === false
-                            ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                            : 'bg-white text-pink-600 border-pink-300 hover:bg-pink-50'
-                        }
-                      `}
-                    >
-                      {s.startTime?.substring(11, 16)}
-                    </button>
-                  ))}
+                  {list.map((s, idx) => {
+                    // 每个场次每账号限 6 张
+                    const used = scheduleQuota?.get(String(s.scheduleId)) || 0;
+                    const quotaReached = used >= 6;
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => onSelectTime(s)}
+                        disabled={s.canSale === false || quotaReached}
+                        title={quotaReached ? `该场次已出 ${used} 张（每场限 6 张）` : `${s.startTime?.substring(11, 16)}（已出 ${used}/6 张）`}
+                        className={`
+                          px-3 py-1.5 text-sm rounded border transition-colors flex flex-col items-center
+                          ${
+                            s.canSale === false || quotaReached
+                              ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                              : 'bg-white text-pink-600 border-pink-300 hover:bg-pink-50'
+                          }
+                        `}
+                      >
+                        <span>{s.startTime?.substring(11, 16)}</span>
+                        <span className={`text-[10px] leading-tight ${quotaReached ? 'text-gray-400' : used > 0 ? 'text-orange-500' : 'text-gray-400'}`}>
+                          已出 {used}/6
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -945,6 +990,7 @@ function SeatModal({
   onToast,
   onRefresh,
   refreshing,
+  scheduleQuota,
 }: {
   cinema?: Cinema;
   cinemaName?: string;
@@ -960,6 +1006,7 @@ function SeatModal({
   onToast: (msg: string) => void;
   onRefresh?: () => void;
   refreshing?: boolean;
+  scheduleQuota?: Map<string, number>;
 }) {
   const { schedule, seats, seatTypes, loading, error } = modal;
   const cinemaId = (cinema as any)?.id || (schedule as any)?.cinemaId || '';
@@ -1131,8 +1178,11 @@ function SeatModal({
     setSelectedSeats((prev) => {
       const exists = prev.find((s) => s.seatCode === seat.seatCode);
       if (exists) return prev.filter((s) => s.seatCode !== seat.seatCode);
-      if (prev.length >= 4) {
-        onToast('最多选择4个座位');
+      // 每个场次每账号限 6 张（已出票数 + 本次选择 ≤ 6）
+      const used = scheduleQuota?.get(String(modal.schedule.scheduleId)) || 0;
+      const MAX_SEATS = 6;
+      if (prev.length + used >= MAX_SEATS) {
+        onToast(`该场次每账号限购 ${MAX_SEATS} 张（已出 ${used} 张）`);
         return prev;
       }
       return [...prev, seat];
