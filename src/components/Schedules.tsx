@@ -1195,28 +1195,59 @@ function SeatModal({
       const used = scheduleQuota?.get(String(modal.schedule.scheduleId)) || 0;
       const MAX_SEATS = 6;
       if (prev.length + used >= MAX_SEATS) {
-        // 找其他可用的账号（有 token），按该场次已出票数升序（剩余票数多的优先）
+        // 找其他可用的账号（有 token）：优先余额足够，其次剩余票数多
         const sid = String(modal.schedule.scheduleId);
+        // 单张票价（取已选座位或全场基准价）
+        const unitPrice =
+          seat.specialPrice || seat.price || seat.fee ||
+          seats.find((s) => Number(s.specialPrice) > 0)?.specialPrice ||
+          0;
         const others = (accounts || [])
           .filter((a) => a.id !== account?.id && a.token && a.memberId)
-          .map((a) => ({ acc: a, used: scheduleQuota?.get(sid) || 0 }))
+          .map((a) => ({
+            acc: a,
+            used: scheduleQuota?.get(sid) || 0,
+            balance: Number(a.balance || (a as any).viewAmountBalance || (a as any).totalBalance || 0),
+          }))
           .filter((x) => x.used < MAX_SEATS)
-          .sort((a, b) => a.used - b.used);
-        const best = others[0];
+          // 余额足够的排前面（剩余票多优先），余额不足的排后面
+          .sort((a, b) => {
+            const aEnough = a.balance >= unitPrice;
+            const bEnough = b.balance >= unitPrice;
+            if (aEnough !== bEnough) return aEnough ? -1 : 1;
+            return a.used - b.used;
+          });
+        const enough = others.filter((x) => x.balance >= unitPrice);
+        const best = enough[0] || others[0];
         if (best && onSwitchAccount) {
           const remain = MAX_SEATS - best.used;
-          const msg = `当前账号（${account?.name || account?.phone || '当前'}）该场次已出 ${used} 张，达到每账号限购 ${MAX_SEATS} 张。\n\n是否切换到「${best.acc.name || best.acc.phone}」账号继续下单？（该账号还可出 ${remain} 张）`;
+          const balanceEnough = best.balance >= unitPrice;
+          const balanceText = `余额 ¥${best.balance.toFixed(2)}`;
+          const msg = `当前账号（${account?.name || account?.phone || '当前'}）该场次已出 ${used} 张，达到每账号限购 ${MAX_SEATS} 张。\n\n是否切换到「${best.acc.name || best.acc.phone}」账号继续下单？\n（${balanceText}，还可出 ${remain} 张${balanceEnough ? '' : '，余额不足请先充值'}）`;
           if (window.confirm(msg)) {
             // 清空已选座位，切换账号后由父组件重新加载该场次座位
             setSelectedSeats([]);
             onSwitchAccount(best.acc.id).then(() => {
-              onToast(`已切换到「${best.acc.name || best.acc.phone}」，还可出 ${remain} 张，请重新选座`);
+              onToast(
+                balanceEnough
+                  ? `已切换到「${best.acc.name || best.acc.phone}」，还可出 ${remain} 张，请重新选座`
+                  : `已切换到「${best.acc.name || best.acc.phone}」，但余额不足（¥${best.balance.toFixed(2)}），请充值后再下单`
+              );
               // 触发重新加载座位（新账号价格/配额）
               setTimeout(() => onRefresh?.(), 300);
             });
           }
+        } else if (others.length > 0) {
+          // 所有账号余额都不足：提示充值后推荐账号购票
+          const all = others.slice().sort((a, b) => a.used - b.used);
+          const rec = all[0];
+          const remain = MAX_SEATS - rec.used;
+          const names = all.slice(0, 3).map((x) => `「${x.acc.name || x.acc.phone}」（余额 ¥${x.balance.toFixed(2)}，剩 ${MAX_SEATS - x.used} 张）`).join('、');
+          onToast(
+            `所有账号余额都不足（当前账号已出 ${used} 张）。推荐充值后「${rec.acc.name || rec.acc.phone}」购票（余额 ¥${rec.balance.toFixed(2)}，剩 ${remain} 张）。可充值的账号：${names}`
+          );
         } else {
-          onToast(`该场次每账号限购 ${MAX_SEATS} 张（已出 ${used} 张），可截图座位但不能再选座`);
+          onToast(`该场次每账号限购 ${MAX_SEATS} 张（已出 ${used} 张），无其他可用账号，可截图座位但不能再选座`);
         }
         return prev;
       }
