@@ -913,26 +913,28 @@ function FilmCard({
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {list.map((s, idx) => {
-                    // 每个场次每账号限 6 张
+                    // 每个场次每账号限 6 张（满 6 不禁用，仍可进入查看/截图座位，只是不能下单）
                     const used = scheduleQuota?.get(String(s.scheduleId)) || 0;
                     const quotaReached = used >= 6;
                     return (
                       <button
                         key={idx}
                         onClick={() => onSelectTime(s)}
-                        disabled={s.canSale === false || quotaReached}
-                        title={quotaReached ? `该场次已出 ${used} 张（每场限 6 张）` : `${s.startTime?.substring(11, 16)}（已出 ${used}/6 张）`}
+                        disabled={s.canSale === false}
+                        title={`${s.startTime?.substring(11, 16)}（已出 ${used}/6 张${quotaReached ? '，已满，仅可查看座位' : ''}）`}
                         className={`
                           px-3 py-1.5 text-sm rounded border transition-colors flex flex-col items-center
                           ${
-                            s.canSale === false || quotaReached
+                            s.canSale === false
                               ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                              : quotaReached
+                              ? 'bg-orange-50 text-orange-600 border-orange-300 hover:bg-orange-100'
                               : 'bg-white text-pink-600 border-pink-300 hover:bg-pink-50'
                           }
                         `}
                       >
                         <span>{s.startTime?.substring(11, 16)}</span>
-                        <span className={`text-[10px] leading-tight ${quotaReached ? 'text-gray-400' : used > 0 ? 'text-orange-500' : 'text-gray-400'}`}>
+                        <span className={`text-[10px] leading-tight ${quotaReached ? 'text-orange-500' : used > 0 ? 'text-orange-500' : 'text-gray-400'}`}>
                           已出 {used}/6
                         </span>
                       </button>
@@ -1178,11 +1180,11 @@ function SeatModal({
     setSelectedSeats((prev) => {
       const exists = prev.find((s) => s.seatCode === seat.seatCode);
       if (exists) return prev.filter((s) => s.seatCode !== seat.seatCode);
-      // 每个场次每账号限 6 张（已出票数 + 本次选择 ≤ 6）
+      // 每个场次每账号限 6 张（已出票数 + 本次选择 ≤ 6）；满 6 仍可查看座位，只是不能选座下单
       const used = scheduleQuota?.get(String(modal.schedule.scheduleId)) || 0;
       const MAX_SEATS = 6;
       if (prev.length + used >= MAX_SEATS) {
-        onToast(`该场次每账号限购 ${MAX_SEATS} 张（已出 ${used} 张）`);
+        onToast(`该场次每账号限购 ${MAX_SEATS} 张（已出 ${used} 张），可截图座位但不能再选座`);
         return prev;
       }
       return [...prev, seat];
