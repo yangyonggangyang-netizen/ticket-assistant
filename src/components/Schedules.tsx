@@ -311,6 +311,7 @@ export default function Schedules() {
     setSelectedCinema,
     accounts,
     activeAccountId,
+    switchAccount,
   } = useStore();
   const account = accounts.find((a) => a.id === activeAccountId);
   const [filmGroups, setFilmGroups] = useState<FilmGroup[]>([]);
@@ -735,6 +736,12 @@ export default function Schedules() {
           onRefresh={() => openSeat(seatModal.schedule)}
           refreshing={seatModal.loading}
           scheduleQuota={scheduleQuota}
+          accounts={accounts}
+          onSwitchAccount={async (id) => {
+            await switchAccount(id);
+            // 切换后重新加载该场次座位 + 刷新配额
+            await loadData();
+          }}
         />
       )}
 
@@ -993,6 +1000,8 @@ function SeatModal({
   onRefresh,
   refreshing,
   scheduleQuota,
+  accounts,
+  onSwitchAccount,
 }: {
   cinema?: Cinema;
   cinemaName?: string;
@@ -1009,6 +1018,8 @@ function SeatModal({
   onRefresh?: () => void;
   refreshing?: boolean;
   scheduleQuota?: Map<string, number>;
+  accounts?: Account[];
+  onSwitchAccount?: (id: string) => Promise<void>;
 }) {
   const { schedule, seats, seatTypes, loading, error } = modal;
   const cinemaId = (cinema as any)?.id || (schedule as any)?.cinemaId || '';
@@ -1180,11 +1191,33 @@ function SeatModal({
     setSelectedSeats((prev) => {
       const exists = prev.find((s) => s.seatCode === seat.seatCode);
       if (exists) return prev.filter((s) => s.seatCode !== seat.seatCode);
-      // 每个场次每账号限 6 张（已出票数 + 本次选择 ≤ 6）；满 6 仍可查看座位，只是不能选座下单
+      // 每个场次每账号限 6 张（已出票数 + 本次选择 ≤ 6）；满 6 时提示切换账号续单
       const used = scheduleQuota?.get(String(modal.schedule.scheduleId)) || 0;
       const MAX_SEATS = 6;
       if (prev.length + used >= MAX_SEATS) {
-        onToast(`该场次每账号限购 ${MAX_SEATS} 张（已出 ${used} 张），可截图座位但不能再选座`);
+        // 找其他可用的账号（有 token），按该场次已出票数升序（剩余票数多的优先）
+        const sid = String(modal.schedule.scheduleId);
+        const others = (accounts || [])
+          .filter((a) => a.id !== account?.id && a.token && a.memberId)
+          .map((a) => ({ acc: a, used: scheduleQuota?.get(sid) || 0 }))
+          .filter((x) => x.used < MAX_SEATS)
+          .sort((a, b) => a.used - b.used);
+        const best = others[0];
+        if (best && onSwitchAccount) {
+          const remain = MAX_SEATS - best.used;
+          const msg = `当前账号（${account?.name || account?.phone || '当前'}）该场次已出 ${used} 张，达到每账号限购 ${MAX_SEATS} 张。\n\n是否切换到「${best.acc.name || best.acc.phone}」账号继续下单？（该账号还可出 ${remain} 张）`;
+          if (window.confirm(msg)) {
+            // 清空已选座位，切换账号后由父组件重新加载该场次座位
+            setSelectedSeats([]);
+            onSwitchAccount(best.acc.id).then(() => {
+              onToast(`已切换到「${best.acc.name || best.acc.phone}」，还可出 ${remain} 张，请重新选座`);
+              // 触发重新加载座位（新账号价格/配额）
+              setTimeout(() => onRefresh?.(), 300);
+            });
+          }
+        } else {
+          onToast(`该场次每账号限购 ${MAX_SEATS} 张（已出 ${used} 张），可截图座位但不能再选座`);
+        }
         return prev;
       }
       return [...prev, seat];
