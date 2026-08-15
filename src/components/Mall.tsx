@@ -17,6 +17,7 @@ import {
   Loader,
   Copy,
   Building2,
+  Camera,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useStore } from '../store/useStore';
@@ -96,6 +97,8 @@ export default function Mall() {
   const [orderId, setOrderId] = useState<string>('');
   const [pickupInfo, setPickupInfo] = useState<{ verifyCode: string; goodsName: string; cinemaName?: string; orderNo?: string } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 兑换成功卡片（一键截图用）
+  const pickupCardRef = useRef<HTMLDivElement>(null);
 
   // 卖品优惠券/价格计算
   const [goodsVouchers, setGoodsVouchers] = useState<any[]>([]);
@@ -464,14 +467,19 @@ export default function Mall() {
       const resp = await api.ticketMessage(id);
       if (resp.success && resp.result) {
         const o = resp.result as any;
-        // 积分兑换卖品：取货码/券码在 takeCode（如 7174）；电影票在 verify_code/print_no
+        const ord = o.order || {};
+        // 券码优先级：完整码优先（电影票 verify_code / 卖品 print_no / 小票号），takeCode(后4位)仅兜底
+        // 实测：爆米花 print_no='3704478436'（完整券码），takeCode='8436'（只是后4位，不是完整券码）
         let code = String(
           o.pickupCode ||
-          o.takeCode ||
           o.verify_code ||
-          o.ticketCode ||
           o.printNo ||
           o.print_no ||
+          ord.verifyCode ||
+          ord.printNo ||
+          ord.print_no ||
+          o.ticketCode ||
+          o.takeCode ||
           ''
         );
         const cards = o.cardGoodsCode || o.ticketCodes || [];
@@ -502,6 +510,33 @@ export default function Mall() {
       }
     } catch (e) {
       console.error('Failed to fetch pickup info:', e);
+    }
+  };
+
+  // 一键截图兑换成功卡片（影城/套餐/券码/二维码）
+  const capturePickupCard = async () => {
+    if (!window.electronAPI?.captureRegion) {
+      setPayMessage('截图功能仅在桌面应用中可用');
+      setTimeout(() => setPayMessage('支付成功！'), 2000);
+      return;
+    }
+    if (!pickupCardRef.current) return;
+    try {
+      const el = pickupCardRef.current;
+      el.scrollIntoView({ block: 'center', behavior: 'instant' as any });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const rect = el.getBoundingClientRect();
+      const result = await window.electronAPI.captureRegion({
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
+      setPayMessage(result.success ? '截图已复制，可直接粘贴发送' : result.error || '截图失败');
+      setTimeout(() => setPayMessage('支付成功！'), 2500);
+    } catch (e: any) {
+      setPayMessage('截图失败：' + e.message);
+      setTimeout(() => setPayMessage('支付成功！'), 2500);
     }
   };
 
@@ -1490,7 +1525,10 @@ export default function Mall() {
                   <p className="text-lg font-bold text-gray-800 mb-4">{payMessage}</p>
 
                   {pickupInfo?.verifyCode ? (
-                    <div className="w-full border-t pt-4 text-center space-y-3">
+                    <div
+                      ref={pickupCardRef}
+                      className="w-full border-t pt-4 text-center space-y-3"
+                    >
                       {/* 影城名称 */}
                       {pickupInfo.cinemaName && (
                         <div className="flex items-center justify-center gap-1.5">
@@ -1530,6 +1568,18 @@ export default function Mall() {
                     </div>
                   ) : (
                     <p className="text-sm text-gray-400">正在获取取货码...</p>
+                  )}
+
+                  {/* 一键截图按钮（兑换成功卡片） */}
+                  {pickupInfo?.verifyCode && (
+                    <button
+                      onClick={capturePickupCard}
+                      className="mt-3 flex items-center gap-2 px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg"
+                      title="截图兑换信息，可直接粘贴发送"
+                    >
+                      <Camera className="w-4 h-4" />
+                      一键截图
+                    </button>
                   )}
 
                   <button
