@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, CalendarDays, Settings2, Save, Pencil, Check, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, CalendarDays, Settings2, Save, Pencil, Check, X, Layers } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import { loadOverrides, saveOverride, clearOverride } from '../store/ledgerOverride';
+import { loadRules, saveRules, PriceRule } from '../store/batchStore';
+import BatchManager from './BatchManager';
 
 // 固定卖价配置（localStorage 持久化，可编辑）
 const PRICES_KEY = 'ledger_prices';
@@ -187,6 +189,32 @@ export default function Ledger() {
   const [priceEdit, setPriceEdit] = useState<LedgerPrices>(loadPrices);
   const [showPriceEdit, setShowPriceEdit] = useState(false);
   const [priceMsg, setPriceMsg] = useState('');
+  // 视图切换：calendar=记账日历 / batches=活动批次
+  const [view, setView] = useState<'calendar' | 'batches'>('calendar');
+  // 价格规则（按日期多版本）
+  const [priceRules, setPriceRules] = useState<PriceRule[]>(loadRules);
+  const [newRule, setNewRule] = useState<{ from: string; to: string; jinyiCost: number; jinyiSell: number; jinyiCode: number; jiaheCost: number; jiaheSell: number; jiaheCode: number; note: string }>({
+    from: '', to: '', jinyiCost: 35, jinyiSell: 33, jinyiCode: 30, jiaheCost: 30, jiaheSell: 30, jiaheCode: 28, note: '',
+  });
+  const addRule = () => {
+    if (!newRule.from) { setPriceMsg('请填写生效日期'); setTimeout(() => setPriceMsg(''), 3000); return; }
+    const rule: PriceRule = {
+      id: 'rule-' + Date.now(),
+      effectiveFrom: newRule.from,
+      effectiveTo: newRule.to || undefined,
+      jinyiCost: newRule.jinyiCost, jinyiSell: newRule.jinyiSell, jinyiCode: newRule.jinyiCode,
+      jiaheCost: newRule.jiaheCost, jiaheSell: newRule.jiaheSell, jiaheCode: newRule.jiaheCode,
+      note: newRule.note || '自定义规则',
+    };
+    setPriceRules([...priceRules, rule]);
+    setNewRule({ from: '', to: '', jinyiCost: 35, jinyiSell: 33, jinyiCode: 30, jiaheCost: 30, jiaheSell: 30, jiaheCode: 28, note: '' });
+    setPriceMsg('规则已添加，点「保存规则」生效');
+    setTimeout(() => setPriceMsg(''), 3000);
+  };
+  const deleteRule = (id: string) => {
+    if (priceRules.length <= 1) return;
+    setPriceRules(priceRules.filter((r) => r.id !== id));
+  };
 
   const savePrices = () => {
     const p = {
@@ -463,7 +491,7 @@ export default function Ledger() {
         <div>
           <h2 className="text-xl font-bold flex items-center gap-2">
             <CalendarDays className="w-5 h-5 text-pink-500" />
-            记账日历
+            记账
           </h2>
           <p className="text-sm text-gray-500">
             {accounts.length > 0 ? `统计 ${accounts.length} 个账号 · 每日出票记录与利润` : '暂无账号'}
@@ -488,6 +516,25 @@ export default function Ledger() {
           </button>
         </div>
       </div>
+
+      {/* 视图切换 */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setView('calendar')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg ${view === 'calendar' ? 'bg-pink-500 text-white' : 'bg-white border text-gray-500 hover:bg-gray-50'}`}
+        >
+          <CalendarDays className="w-4 h-4" /> 记账日历
+        </button>
+        <button
+          onClick={() => setView('batches')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg ${view === 'batches' ? 'bg-pink-500 text-white' : 'bg-white border text-gray-500 hover:bg-gray-50'}`}
+        >
+          <Layers className="w-4 h-4" /> 活动批次
+        </button>
+      </div>
+
+      {/* 活动批次视图 */}
+      {view === 'batches' && <BatchManager />}
 
       {priceMsg && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-2.5 text-sm text-green-700">{priceMsg}</div>
@@ -872,44 +919,99 @@ export default function Ledger() {
         </div>
       )}
 
-      {/* 固定卖价设置弹窗 */}
+      {/* 价格规则设置弹窗（按日期多版本） */}
       {showPriceEdit && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setShowPriceEdit(false)}>
-          <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-medium text-lg">固定卖价设置</h3>
+          <div className="bg-white rounded-xl p-5 w-full max-w-md space-y-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-medium text-lg">价格规则设置</h3>
             <p className="text-xs text-gray-400">
-              利润 = 固定卖价 × 张数 - 订单实际支付金额（含观影金抵扣后的实付）。价格可随时修改。
+              按生效日期配置多版本价格（节假日新建规则，不修改历史订单）。单票价格：会员购票成本 / 客户售价 / 核销码售价。
             </p>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">金逸巨幕影城 · 卖价（元/张）</label>
-              <input
-                type="number"
-                value={priceEdit.jinyi}
-                onChange={(e) => setPriceEdit({ ...priceEdit, jinyi: Number(e.target.value) || 0 })}
-                placeholder="如：30"
-                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
-              />
+            {/* 规则列表 */}
+            <div className="space-y-2">
+              {priceRules.map((r) => (
+                <div key={r.id} className="border rounded-lg p-2.5 text-xs space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-gray-700">
+                      {r.note || '价格规则'} · 生效 {r.effectiveFrom}{r.effectiveTo ? ` ~ ${r.effectiveTo}` : ''}
+                    </span>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => deleteRule(r.id)}
+                        disabled={priceRules.length <= 1}
+                        className="p-1 text-red-400 hover:text-red-600 disabled:opacity-30"
+                        title="删除规则"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-gray-500">
+                    <span>金逸：成本{r.jinyiCost} / 售{r.jinyiSell} / 码{r.jinyiCode}</span>
+                    <span>嘉和：成本{r.jiaheCost} / 售{r.jiaheSell} / 码{r.jiaheCode}</span>
+                    <span className="text-gray-300">按日期生效</span>
+                  </div>
+                </div>
+              ))}
             </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">嘉和影城 · 卖价（元/张）</label>
-              <input
-                type="number"
-                value={priceEdit.jiahe}
-                onChange={(e) => setPriceEdit({ ...priceEdit, jiahe: Number(e.target.value) || 0 })}
-                placeholder="如：25"
-                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
-              />
+            {/* 新增规则 */}
+            <div className="border-t pt-3 space-y-2">
+              <p className="text-xs font-medium text-gray-600">新增规则（节假日等）</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-500 block mb-0.5">生效日期</label>
+                  <input type="date" value={newRule.from} onChange={(e) => setNewRule({ ...newRule, from: e.target.value })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-0.5">失效日期（可选）</label>
+                  <input type="date" value={newRule.to} onChange={(e) => setNewRule({ ...newRule, to: e.target.value })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-0.5">金逸成本</label>
+                  <input type="number" value={newRule.jinyiCost} onChange={(e) => setNewRule({ ...newRule, jinyiCost: Number(e.target.value) || 0 })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-0.5">金逸售价</label>
+                  <input type="number" value={newRule.jinyiSell} onChange={(e) => setNewRule({ ...newRule, jinyiSell: Number(e.target.value) || 0 })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-0.5">金逸核销码价</label>
+                  <input type="number" value={newRule.jinyiCode} onChange={(e) => setNewRule({ ...newRule, jinyiCode: Number(e.target.value) || 0 })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-0.5">嘉和成本</label>
+                  <input type="number" value={newRule.jiaheCost} onChange={(e) => setNewRule({ ...newRule, jiaheCost: Number(e.target.value) || 0 })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-0.5">嘉和售价</label>
+                  <input type="number" value={newRule.jiaheSell} onChange={(e) => setNewRule({ ...newRule, jiaheSell: Number(e.target.value) || 0 })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-0.5">嘉和核销码价</label>
+                  <input type="number" value={newRule.jiaheCode} onChange={(e) => setNewRule({ ...newRule, jiaheCode: Number(e.target.value) || 0 })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs text-gray-500 block mb-0.5">备注（如：国庆节）</label>
+                  <input value={newRule.note} onChange={(e) => setNewRule({ ...newRule, note: e.target.value })} className="w-full px-2 py-1.5 text-sm border rounded-lg outline-none focus:border-purple-400" />
+                </div>
+              </div>
+              <button
+                onClick={addRule}
+                className="w-full py-2 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600"
+              >
+                添加规则
+              </button>
             </div>
             <div className="flex gap-2 pt-1">
               <button
-                onClick={savePrices}
+                onClick={() => { saveRules(priceRules); setPriceMsg('价格规则已保存'); setShowPriceEdit(false); setTimeout(() => setPriceMsg(''), 3000); }}
                 className="flex-1 flex items-center justify-center gap-1 px-4 py-2 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600"
               >
                 <Save className="w-4 h-4" />
-                确认保存
+                保存规则
               </button>
               <button
-                onClick={() => setShowPriceEdit(false)}
+                onClick={() => { setShowPriceEdit(false); setPriceRules(loadRules()); }}
                 className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
               >
                 取消
