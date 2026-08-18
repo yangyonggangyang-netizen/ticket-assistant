@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, Cal
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import { loadOverrides, saveOverride, clearOverride } from '../store/ledgerOverride';
-import { loadRules, saveRules, PriceRule } from '../store/batchStore';
+import { loadRules, saveRules, PriceRule, loadBatches, saveBatches, loadOrders as loadBatchOrders, saveOrders as saveBatchOrders, refreshBatchStatuses, getRuleForDate } from '../store/batchStore';
 import BatchManager from './BatchManager';
 
 // 固定卖价配置（localStorage 持久化，可编辑）
@@ -214,6 +214,100 @@ export default function Ledger() {
   const deleteRule = (id: string) => {
     if (priceRules.length <= 1) return;
     setPriceRules(priceRules.filter((r) => r.id !== id));
+  };
+  // ===== 批次订单绑定 =====
+  const [batches, setBatches] = useState<any[]>([]);
+  const [batchOrders, setBatchOrders] = useState<any[]>([]);
+  const [bindOrder, setBindOrder] = useState<{ order: any; tickets: number; cinema: 'jinyi' | 'jiahe' } | null>(null);
+  const [bindBatchId, setBindBatchId] = useState('');
+  const [bindCoupon, setBindCoupon] = useState(0);
+  const [bindMsg, setBindMsg] = useState('');
+  const [savingBind, setSavingBind] = useState(false);
+
+  useEffect(() => {
+    setBatches(refreshBatchStatuses(loadBatches()));
+    setBatchOrders(loadBatchOrders());
+  }, [view]);
+
+  const orderIdKey = (o: any): string => {
+    // 用订单号作为唯一标识（order_no / orderNo / id）
+    return String(o.order_no || o.orderNo || o.id || `${o.type_name || ''}-${o.create_time || o.createTime || Date.now()}`);
+  };
+
+  const openBindBatch = (o: any, tickets: number, cinema: 'jinyi' | 'jiahe') => {
+    setBindOrder({ order: o, tickets, cinema });
+    setBindBatchId('');
+    setBindCoupon(0);
+    setBindMsg('');
+  };
+
+  // 绑定批次：自动计算成本/优惠/利润
+  const doBind = async () => {
+    if (!bindOrder || !bindBatchId) { setBindMsg('请选择活动批次'); return; }
+    setSavingBind(true);
+    setBindMsg('');
+    try {
+      const all = loadBatches();
+      const b = all.find((x) => x.id === bindBatchId);
+      if (!b) { setBindMsg('批次不存在'); setSavingBind(false); return; }
+      if (b.status !== 'active') { setBindMsg('批次已用完或过期'); setSavingBind(false); return; }
+      const { order, tickets, cinema } = bindOrder;
+      // 价格规则（按订单日期）
+      const date = orderDate(order);
+      const rule = getRuleForDate(loadRules(), date);
+      const isJ = cinema === 'jinyi';
+      // 成本：会员购票成本
+      const costNormal = (isJ ? rule.jinyiCost : rule.jiaheCost) * tickets;
+      // 优惠抵扣：min(票数×上限, 优惠金剩余, 手动填写的金额)
+      const maxByTicket = tickets * (b.couponPerTicket || 0);
+      const couponUsed = Math.min(Number(bindCoupon) || 0, maxByTicket, b.couponLeft);
+      const costActual = Math.max(0, costNormal - couponUsed);
+      // 收入：客户售价（核销码类型按核销码价，这里电影票按售价）
+      const income = (isJ ? rule.jinyiSell : rule.jiaheSell) * tickets;
+      const profit = income - costActual;
+      // 保存批次订单
+      const bo = {
+        id: orderIdKey(order),
+        time: date,
+        batchId: b.id,
+        accountId: order.memberId || '',
+        cinema,
+        type: 'member' as const,
+        tickets,
+        sellPrice: income,
+        costNormal,
+        couponUsed,
+        costActual,
+        fee: 0,
+        voucherCode: String(order.take_code || order.takeCode || order.verify_code || ''),
+        status: 'shipped' as const,
+        profit,
+        priceNote: rule.note || '默认规则',
+      };
+      // 扣减批次余额/优惠金
+      const newB = { ...b };
+      newB.balanceLeft = Math.max(0, (newB.balanceLeft || 0) - costActual);
+      if (newB.type === 'coupon') {
+        newB.couponLeft = Math.max(0, (newB.couponLeft || 0) - couponUsed);
+      } else if (newB.type === 'voucher') {
+        newB.giftVouchersLeft = Math.max(0, (newB.giftVouchersLeft || 0) - tickets);
+      }
+      saveBatches(all.map((x) => x.id === b.id ? newB : x));
+      // 保存订单
+      const orders = loadBatchOrders();
+      orders.push(bo);
+      saveBatchOrders(orders);
+      // 刷新
+      setBatches(refreshBatchStatuses(loadBatches()));
+      setBatchOrders(loadBatchOrders());
+      setBindOrder(null);
+      setPriceMsg(`✅ 已绑定批次 ${b.id}，利润 ¥${profit.toFixed(2)}`);
+      setTimeout(() => setPriceMsg(''), 4000);
+    } catch (e: any) {
+      setBindMsg('绑定失败：' + (e.message || String(e)));
+    } finally {
+      setSavingBind(false);
+    }
   };
 
   const savePrices = () => {
@@ -824,6 +918,7 @@ export default function Ledger() {
                 const cost = orderAmount(o); // 实际支付成本
                 const profit = saleIncome - cost; // 每单利润
                 const perTicket = n > 0 ? profit / n : 0;
+                const boundOrder = batchOrders.find((bo) => bo.id === orderIdKey(o));
                 return (
                   <div key={i} className="flex items-center justify-between text-sm bg-gray-50 rounded-lg p-2.5">
                     <div className="flex-1 min-w-0">
@@ -834,15 +929,34 @@ export default function Ledger() {
                         {orderTickets(o)} 张
                         {msg.hallName || o.hallName ? ` · ${msg.hallName || o.hallName}` : ''}
                       </p>
-                      <p className={`text-xs mt-0.5 ${perTicket >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                        每张 {perTicket >= 0 ? '+' : ''}¥{perTicket.toFixed(1)}
-                      </p>
+                      {boundOrder ? (
+                        <p className="text-xs mt-0.5 text-purple-600">
+                          📦 已绑定批次 {boundOrder.batchId}
+                          {boundOrder.couponUsed > 0 ? ` · 优惠抵¥${boundOrder.couponUsed.toFixed(0)}` : ''}
+                          {' · '}利润 ¥{boundOrder.profit.toFixed(0)}
+                        </p>
+                      ) : (
+                        <p className={`text-xs mt-0.5 ${perTicket >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                          每张 {perTicket >= 0 ? '+' : ''}¥{perTicket.toFixed(1)}
+                          {perTicket < 0 && <span className="ml-1 text-red-500">亏损单</span>}
+                        </p>
+                      )}
                     </div>
-                    <div className="text-right ml-3">
-                      <p className={`font-bold ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {profit >= 0 ? '+' : ''}¥{profit.toFixed(0)}
-                      </p>
-                      <p className="text-[10px] text-gray-400">成本¥{cost.toFixed(0)}</p>
+                    <div className="text-right ml-3 flex items-center gap-2">
+                      <div>
+                        <p className={`font-bold ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          {profit >= 0 ? '+' : ''}¥{profit.toFixed(0)}
+                        </p>
+                        <p className="text-[10px] text-gray-400">成本¥{cost.toFixed(0)}</p>
+                      </div>
+                      {!boundOrder && (
+                        <button
+                          onClick={() => openBindBatch(o, n, isJiahe(o) ? 'jiahe' : 'jinyi')}
+                          className="px-2 py-1 text-[11px] bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 whitespace-nowrap"
+                        >
+                          绑定批次
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -914,6 +1028,84 @@ export default function Ledger() {
                 <X className="w-3.5 h-3.5" />
                 取消
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 绑定批次弹窗 */}
+      {bindOrder && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setBindOrder(null)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-medium text-lg">绑定活动批次</h3>
+            <div className="text-xs text-gray-500 space-y-1 bg-gray-50 rounded-lg p-3">
+              <p>{bindOrder.cinema === 'jinyi' ? '金逸巨幕影城' : '嘉和影城'} · {bindOrder.tickets} 张</p>
+              <p>订单日期：{orderDate(bindOrder.order)}</p>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">选择活动批次 *</label>
+              <select
+                value={bindBatchId}
+                onChange={(e) => setBindBatchId(e.target.value)}
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+              >
+                <option value="">选择批次</option>
+                {batches.filter((b) => b.status === 'active').map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.id} · {b.accountName} · {b.type === 'coupon' ? `优惠金¥${b.couponLeft}` : `赠券${b.giftVouchersLeft}张`}
+                  </option>
+                ))}
+              </select>
+              {batches.filter((b) => b.status === 'active').length === 0 && (
+                <p className="text-[11px] text-amber-600 mt-1">暂无进行中的批次，请先到「活动批次」创建</p>
+              )}
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">本单优惠抵扣（元，可选）</label>
+              <input
+                type="number"
+                value={bindCoupon}
+                onChange={(e) => setBindCoupon(Number(e.target.value) || 0)}
+                placeholder="如：40（自动限 ≤ 票数×上限、≤ 优惠金剩余）"
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+              />
+            </div>
+            {/* 预计利润预览（亏损红色预警） */}
+            {bindBatchId && bindOrder && (() => {
+              const b = batches.find((x) => x.id === bindBatchId);
+              const rule = getRuleForDate(loadRules(), orderDate(bindOrder.order));
+              const isJ = bindOrder.cinema === 'jinyi';
+              const costNormal = (isJ ? rule.jinyiCost : rule.jiaheCost) * bindOrder.tickets;
+              const maxByTicket = bindOrder.tickets * (b?.couponPerTicket || 0);
+              const couponUsed = Math.min(Number(bindCoupon) || 0, maxByTicket, b?.couponLeft ?? 0);
+              const costActual = Math.max(0, costNormal - couponUsed);
+              const income = (isJ ? rule.jinyiSell : rule.jiaheSell) * bindOrder.tickets;
+              const estProfit = income - costActual;
+              const isLoss = estProfit < 0;
+              return (
+                <div className={`rounded-lg p-3 text-xs space-y-0.5 ${isLoss ? 'bg-red-50 border border-red-200' : 'bg-blue-50 border border-blue-100'}`}>
+                  <p className="text-gray-500">正常成本：¥{costNormal.toFixed(2)} ｜ 本单优惠抵扣：¥{couponUsed.toFixed(2)}</p>
+                  <p className="text-gray-500">实际成本：¥{costActual.toFixed(2)} ｜ 客户售价：¥{income.toFixed(2)}</p>
+                  <p className={`font-bold ${isLoss ? 'text-red-600' : 'text-blue-600'}`}>
+                    预计利润：{estProfit >= 0 ? '+' : ''}¥{estProfit.toFixed(2)}
+                    {isLoss && ' ⚠️ 本单亏损'}
+                  </p>
+                  {isLoss && (
+                    <p className="text-red-500 font-medium">红色预警：该订单绑定后为亏损单，请确认成本与售价无误！</p>
+                  )}
+                </div>
+              );
+            })()}
+            {bindMsg && <p className="text-xs text-red-500">{bindMsg}</p>}
+            <div className="flex gap-2">
+              <button
+                onClick={doBind}
+                disabled={savingBind}
+                className="flex-1 py-2 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:opacity-50"
+              >
+                {savingBind ? '绑定中...' : '确认绑定'}
+              </button>
+              <button onClick={() => setBindOrder(null)} className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200">取消</button>
             </div>
           </div>
         </div>
