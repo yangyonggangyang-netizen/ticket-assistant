@@ -139,8 +139,6 @@ export default function VoucherExport() {
         exportPhone: phones[0] || '',
         mixed: phones.length > 1,
         expireAt,
-        // 手机号后四位用于页面验证（防串券）
-        phoneLast4: phones.map((p) => String(p || '').slice(-4)),
         vouchers: flat.map((v, i) => ({
           _idx: i,
           code: v.code,
