@@ -20,3 +20,4 @@ captured_all.jsonl
 captured_token.json
 
 dist-v*
+gh_token.json

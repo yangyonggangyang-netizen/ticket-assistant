@@ -511,7 +511,16 @@ app.whenReady().then(() => {
   // ===== 兑换券链接部署（GitHub Pages） =====
   // 上传 HTML 到 gh-pages 分支，返回公网链接
   // 固定链接：https://yangyonggangyang-netizen.github.io/ticket-assistant/voucher.html
-  const GH_TOKEN = 'GH_TOKEN_REMOVED';
+  // token 从本地配置文件读取（gh_token.json，不入库防泄露）
+  let GH_TOKEN = '';
+  try {
+    const tokenFile = path.join(__dirname, 'gh_token.json');
+    if (fs.existsSync(tokenFile)) {
+      GH_TOKEN = JSON.parse(fs.readFileSync(tokenFile, 'utf-8')).token || '';
+    }
+  } catch (e) {
+    console.error('Failed to load GH token:', e.message);
+  }
   const GH_REPO = 'yangyonggangyang-netizen/ticket-assistant';
   const GH_BRANCH = 'gh-pages';
   const GH_FILE = 'voucher.html';
