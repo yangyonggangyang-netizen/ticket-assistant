@@ -19,3 +19,4 @@ builder-debug.yml
 captured_all.jsonl
 captured_token.json
 
+dist-v*
