@@ -27,14 +27,22 @@ export default function VoucherExport() {
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [cancelling, setCancelling] = useState<string | null>(null);
 
-  // 拉取某账号的未使用未导出电影票兑换券
+  // 拉取某账号的未使用未导出电影票兑换券（翻页拉全量，不限200）
   const fetchUnusedVouchers = async (acc: any, excludeCodes: Set<string>): Promise<any[]> => {
     try {
-      const resp = await api.getMemberVouchersAs(acc.token, acc.memberId, 1, 1, 200);
-      if (!resp.success || !resp.result) return [];
-      const data = resp.result as any;
-      const list: any[] = Array.isArray(data) ? data : data.records || [];
-      return list.filter((v: any) => {
+      const all: any[] = [];
+      for (let page = 1; page <= 10; page++) {
+        const resp = await api.getMemberVouchersAs(acc.token, acc.memberId, 1, page, 200);
+        if (!resp.success || !resp.result) break;
+        const data = resp.result as any;
+        const list: any[] = Array.isArray(data) ? data : data.records || [];
+        if (list.length === 0) break;
+        all.push(...list);
+        // 已拉满则停止
+        const total = Number(data.total) || 0;
+        if (all.length >= total || list.length < 200) break;
+      }
+      return all.filter((v: any) => {
         const code = String(v.voucher_no || v.voucherNo || '');
         if (!code || excludeCodes.has(code)) return false;
         if (String(v.status) !== '1') return false;
@@ -121,12 +129,18 @@ export default function VoucherExport() {
         setExporting(false);
         return;
       }
-      // 5. 组装页面数据并部署（带时间戳防缓存）
+      // 5. 生成订单号（独立文件，不覆盖旧页面）
       const phones = Array.from(new Set(flat.map((f) => f.phone)));
+      const orderId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      // 链接有效期（默认 7 天）
+      const expireAt = Date.now() + 7 * 24 * 3600 * 1000;
       const payload = {
         exportTime: new Date().toLocaleString('zh-CN'),
         exportPhone: phones[0] || '',
         mixed: phones.length > 1,
+        expireAt,
+        // 手机号后四位用于页面验证（防串券）
+        phoneLast4: phones.map((p) => String(p || '').slice(-4)),
         vouchers: flat.map((v, i) => ({
           _idx: i,
           code: v.code,
@@ -140,16 +154,19 @@ export default function VoucherExport() {
       };
       const dataJson = JSON.stringify(payload).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
       const html = VOUCHER_TEMPLATE.replace('__VOUCHER_DATA__', dataJson);
-      const deployResp = await (window as any).electronAPI?.deployVoucherPage?.(html);
+      const deployResp = await (window as any).electronAPI?.deployVoucherPage?.(html, orderId);
       if (!deployResp) throw new Error('桌面应用不支持此功能');
       if (!deployResp.success || !deployResp.url) throw new Error(deployResp.error || '部署失败');
       const url = deployResp.url + '?t=' + Date.now();
-      // 6. 记录导出日志（防重复）
+      // 6. 记录导出日志（防重复 + 状态机）
       await (window as any).electronAPI?.saveVoucherExportRecord?.({
+        orderId,
         phone: phones.join(','),
         codes: flat.map((f) => f.code),
         url,
         time: new Date().toLocaleString('zh-CN'),
+        status: '已发送', // 已发送/已核销/已作废
+        expireAt,
       });
       setResult({ url, count: flat.length, phones });
     } catch (e: any) {
@@ -179,9 +196,18 @@ export default function VoucherExport() {
 
   const cancelExport = async (rec: any, idx: number) => {
     if (!rec) return;
-    if (!window.confirm(`确定撤销该次导出吗？\n手机号：${rec.phone}\n${rec.codes?.length || 0} 张券将恢复可用，可重新导出。`)) return;
+    if (!window.confirm(`确定撤销该次导出吗？\n手机号：${rec.phone}\n${rec.codes?.length || 0} 张券。\n⚠️ 线上链接将立即删除（已发给客户将无法查看）。\n券码恢复可用后可重新导出。`)) return;
     setCancelling(String(idx));
+    setError('');
     try {
+      // 1. 删除线上页面文件（链接立即失效）
+      if (rec.orderId) {
+        const delResp = await (window as any).electronAPI?.deleteVoucherPage?.(rec.orderId);
+        if (!delResp?.success) {
+          setError('线上页面删除失败：' + (delResp?.error || '未知错误') + '（链接可能仍可访问，请手动检查）');
+        }
+      }
+      // 2. 删除导出记录（券恢复可用）
       await (window as any).electronAPI?.cancelVoucherExport?.(rec);
       await loadRecords();
     } catch (e: any) {

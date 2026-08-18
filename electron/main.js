@@ -551,8 +551,7 @@ app.whenReady().then(() => {
   }
   const GH_REPO = 'yangyonggangyang-netizen/ticket-assistant';
   const GH_BRANCH = 'gh-pages';
-  const GH_FILE = 'voucher.html';
-  const GH_PAGE_URL = 'https://yangyonggangyang-netizen.github.io/ticket-assistant/voucher.html';
+  const GH_BASE_URL = 'https://yangyonggangyang-netizen.github.io/ticket-assistant';
 
   async function ghApi(path, method = 'GET', payload = null) {
     const url = `https://api.github.com/repos/${GH_REPO}${path}`;
@@ -576,29 +575,64 @@ app.whenReady().then(() => {
     return data;
   }
 
-  ipcMain.handle('voucher:deployPage', async (event, { html }) => {
+  // 部署：每个订单独立文件名 voucher-{id}.html，不覆盖旧页面
+  ipcMain.handle('voucher:deployPage', async (event, { html, fileId }) => {
     try {
       if (!html || typeof html !== 'string') {
         return { success: false, error: 'HTML 内容为空' };
       }
-      // 1. 检查文件是否存在（拿 sha）
+      const safeId = String(fileId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!safeId) {
+        return { success: false, error: '缺少订单标识' };
+      }
+      const fileName = `voucher-${safeId}.html`;
+      // 1. 检查文件是否存在（拿 sha，存在则覆盖）
       let sha = null;
       try {
-        const meta = await ghApi(`/contents/${GH_FILE}?ref=${GH_BRANCH}`);
+        const meta = await ghApi(`/contents/${fileName}?ref=${GH_BRANCH}`);
         sha = meta && meta.sha;
       } catch (e) {
         // 文件不存在则新建
       }
-      // 2. 写入/更新文件
+      // 2. 写入文件
       const base64 = Buffer.from(html, 'utf-8').toString('base64');
       const payload = {
-        message: `update voucher page ${new Date().toLocaleString('zh-CN')}`,
+        message: `deploy voucher ${safeId} ${new Date().toLocaleString('zh-CN')}`,
         content: base64,
         branch: GH_BRANCH,
       };
       if (sha) payload.sha = sha;
-      await ghApi(`/contents/${GH_FILE}`, 'PUT', payload);
-      return { success: true, url: GH_PAGE_URL };
+      await ghApi(`/contents/${fileName}`, 'PUT', payload);
+      return { success: true, url: `${GH_BASE_URL}/${fileName}` };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
+  // 撤销：删除线上页面文件（链接立即失效）
+  ipcMain.handle('voucher:deletePage', async (event, { fileId }) => {
+    try {
+      const safeId = String(fileId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!safeId) {
+        return { success: false, error: '缺少订单标识' };
+      }
+      const fileName = `voucher-${safeId}.html`;
+      let sha = null;
+      try {
+        const meta = await ghApi(`/contents/${fileName}?ref=${GH_BRANCH}`);
+        sha = meta && meta.sha;
+      } catch (e) {
+        // 文件不存在视为已删除
+        return { success: true, deleted: false };
+      }
+      if (sha) {
+        await ghApi(`/contents/${fileName}`, 'DELETE', {
+          message: `revoke voucher ${safeId} ${new Date().toLocaleString('zh-CN')}`,
+          sha,
+          branch: GH_BRANCH,
+        });
+      }
+      return { success: true, deleted: true };
     } catch (e) {
       return { success: false, error: e.message || String(e) };
     }
