@@ -3,6 +3,7 @@ import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, Exter
 import { useStore } from '../store/useStore';
 import { api, localApi } from '../api/client';
 import type { Account } from '../types';
+import VoucherExport from './VoucherExport';
 
 const WECHAT_APP_ID = 'wx4fd7f63cb29a8891';
 const launchApplet = (path?: string) =>
@@ -656,6 +657,9 @@ export default function Accounts() {
           </p>
         </div>
       </div>
+
+      {/* 兑换券链接导出（自定义选券 + 防重复 + 取消恢复 + 导出记录） */}
+      <VoucherExport />
 
       {/* Capture status */}
       {captureMsg && (

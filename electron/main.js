@@ -508,6 +508,23 @@ app.whenReady().then(() => {
     }
   });
 
+  // 取消导出：删除记录（券恢复可用）
+  ipcMain.handle('voucher:cancelExport', async (event, record) => {
+    try {
+      const data = loadVoucherExportRecords();
+      const targetCodes = Array.isArray(record?.codes) ? record.codes : [];
+      data.records = data.records.filter((r) => {
+        const rc = r.codes || [];
+        // 只删这条记录里完全匹配的（同 phone + 同 codes 列表）
+        return !(r.phone === record?.phone && JSON.stringify(rc) === JSON.stringify(targetCodes));
+      });
+      saveVoucherExportRecords(data);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
   // ===== 兑换券链接部署（GitHub Pages） =====
   // 上传 HTML 到 gh-pages 分支，返回公网链接
   // 固定链接：https://yangyonggangyang-netizen.github.io/ticket-assistant/voucher.html

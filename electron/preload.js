@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveVoucherExportRecord: (record) => ipcRenderer.invoke('voucher:exportRecord', record),
   getExportedVoucherCodes: () => ipcRenderer.invoke('voucher:exportedCodes'),
   getVoucherExportRecords: () => ipcRenderer.invoke('voucher:exportRecords'),
+  cancelVoucherExport: (record) => ipcRenderer.invoke('voucher:cancelExport', record),
   deployVoucherPage: (html) => ipcRenderer.invoke('voucher:deployPage', { html }),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
