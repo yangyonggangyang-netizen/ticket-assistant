@@ -434,6 +434,139 @@ app.whenReady().then(() => {
     }
   });
 
+  // ===== 兑换券导出记录（防重复导出 + 历史追溯） =====
+  // 记录文件：D:\巴蒂哥\出票助手\兑换券导出记录.json
+  const VOUCHER_EXPORT_FILE = 'D:/巴蒂哥/出票助手/兑换券导出记录.json';
+
+  function loadVoucherExportRecords() {
+    try {
+      if (fs.existsSync(VOUCHER_EXPORT_FILE)) {
+        const data = JSON.parse(fs.readFileSync(VOUCHER_EXPORT_FILE, 'utf-8'));
+        if (data && Array.isArray(data.records)) return data;
+      }
+    } catch (e) {
+      console.error('Failed to load voucher export records:', e);
+    }
+    return { records: [] };
+  }
+
+  function saveVoucherExportRecords(data) {
+    try {
+      fs.mkdirSync(path.dirname(VOUCHER_EXPORT_FILE), { recursive: true });
+      fs.writeFileSync(VOUCHER_EXPORT_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (e) {
+      console.error('Failed to save voucher export records:', e);
+    }
+  }
+
+  // 保存一条导出记录：{ phone, codes: [], url, time }
+  ipcMain.handle('voucher:exportRecord', async (event, record) => {
+    try {
+      const data = loadVoucherExportRecords();
+      data.records.unshift({
+        phone: String(record?.phone || ''),
+        codes: Array.isArray(record?.codes) ? record.codes : [],
+        url: String(record?.url || ''),
+        time: String(record?.time || new Date().toLocaleString('zh-CN')),
+      });
+      // 防重复：去重（同 phone + code 只留最新）
+      const seen = new Set();
+      data.records = data.records.filter((r) => {
+        const key = `${r.phone}|${r.codes.join(',')}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      saveVoucherExportRecords(data);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
+  // 查询所有已导出的券码（用于防重复导出过滤）
+  ipcMain.handle('voucher:exportedCodes', async () => {
+    try {
+      const data = loadVoucherExportRecords();
+      const codes = new Set();
+      data.records.forEach((r) => {
+        (r.codes || []).forEach((c) => codes.add(String(c)));
+      });
+      return { success: true, codes: Array.from(codes) };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
+  // 查询导出记录列表（展示用）
+  ipcMain.handle('voucher:exportRecords', async () => {
+    try {
+      const data = loadVoucherExportRecords();
+      return { success: true, records: data.records };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
+  // ===== 兑换券链接部署（GitHub Pages） =====
+  // 上传 HTML 到 gh-pages 分支，返回公网链接
+  // 固定链接：https://yangyonggangyang-netizen.github.io/ticket-assistant/voucher.html
+  const GH_TOKEN = 'GH_TOKEN_REMOVED';
+  const GH_REPO = 'yangyonggangyang-netizen/ticket-assistant';
+  const GH_BRANCH = 'gh-pages';
+  const GH_FILE = 'voucher.html';
+  const GH_PAGE_URL = 'https://yangyonggangyang-netizen.github.io/ticket-assistant/voucher.html';
+
+  async function ghApi(path, method = 'GET', payload = null) {
+    const url = `https://api.github.com/repos/${GH_REPO}${path}`;
+    const headers = {
+      Authorization: `token ${GH_TOKEN}`,
+      'User-Agent': 'ticket-assistant',
+      Accept: 'application/vnd.github.v3+json',
+    };
+    const opts = { method, headers };
+    if (payload) {
+      opts.body = JSON.stringify(payload);
+      headers['Content-Type'] = 'application/json';
+    }
+    const resp = await fetch(url, opts);
+    const text = await resp.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (e) {}
+    if (!resp.ok) {
+      throw new Error(`GitHub API ${resp.status}: ${(data && (data.message || JSON.stringify(data))) || text}`);
+    }
+    return data;
+  }
+
+  ipcMain.handle('voucher:deployPage', async (event, { html }) => {
+    try {
+      if (!html || typeof html !== 'string') {
+        return { success: false, error: 'HTML 内容为空' };
+      }
+      // 1. 检查文件是否存在（拿 sha）
+      let sha = null;
+      try {
+        const meta = await ghApi(`/contents/${GH_FILE}?ref=${GH_BRANCH}`);
+        sha = meta && meta.sha;
+      } catch (e) {
+        // 文件不存在则新建
+      }
+      // 2. 写入/更新文件
+      const base64 = Buffer.from(html, 'utf-8').toString('base64');
+      const payload = {
+        message: `update voucher page ${new Date().toLocaleString('zh-CN')}`,
+        content: base64,
+        branch: GH_BRANCH,
+      };
+      if (sha) payload.sha = sha;
+      await ghApi(`/contents/${GH_FILE}`, 'PUT', payload);
+      return { success: true, url: GH_PAGE_URL };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
   // Save base64 image to disk (for generated schedule poster)
   ipcMain.handle('image:save', async (event, { dataUrl, defaultName }) => {
     try {
