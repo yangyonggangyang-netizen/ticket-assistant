@@ -21,3 +21,4 @@ captured_token.json
 
 dist-v*
 gh_token.json
+.git-rewrite
