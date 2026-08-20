@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, CalendarDays, Settings2, Save, Pencil, Check, X, Layers } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Ticket, Banknote, TrendingUp, CalendarDays, Settings2, Save, Pencil, Check, X, Layers, Plus, Trash2, BadgeCheck } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import { loadOverrides, saveOverride, clearOverride } from '../store/ledgerOverride';
 import { loadRules, saveRules, PriceRule, loadBatches, saveBatches, loadOrders as loadBatchOrders, saveOrders as saveBatchOrders, refreshBatchStatuses, getRuleForDate } from '../store/batchStore';
+import { loadRedemptions, saveRedemptions, addRedemption, deleteRedemption, genCodes, RedemptionRecord } from '../store/redemptionStore';
 import BatchManager from './BatchManager';
 
 // 固定卖价配置（localStorage 持久化，可编辑）
@@ -183,7 +184,6 @@ export default function Ledger() {
     const d = new Date();
     return { y: d.getFullYear(), m: d.getMonth() }; // m: 0-11
   });
-  const [yearPickerOpen, setYearPickerOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string>('');
   const [prices, setPrices] = useState<LedgerPrices>(loadPrices);
   const [priceEdit, setPriceEdit] = useState<LedgerPrices>(loadPrices);
@@ -226,6 +226,16 @@ export default function Ledger() {
   // 绑定类型：会员购票 / 核销码（核销码按核销码价记收入，成本默认 0=赠券）
   const [bindType, setBindType] = useState<'member' | 'code'>('member');
   const [bindCodeCost, setBindCodeCost] = useState(0);
+  // ===== 核销码核销登记 =====
+  const [redemptions, setRedemptions] = useState<RedemptionRecord[]>(loadRedemptions);
+  const [redeemOpen, setRedeemOpen] = useState(false);
+  const [redeemCinema, setRedeemCinema] = useState<'jinyi' | 'jiahe'>('jinyi');
+  const [redeemCount, setRedeemCount] = useState(1);
+  const [redeemPrice, setRedeemPrice] = useState(30);
+  const [redeemCodes, setRedeemCodes] = useState('');
+  const [redeemBatchId, setRedeemBatchId] = useState('');
+  const [redeemMsg, setRedeemMsg] = useState('');
+  const [redeemSaving, setRedeemSaving] = useState(false);
 
   useEffect(() => {
     setBatches(refreshBatchStatuses(loadBatches()));
@@ -321,6 +331,65 @@ export default function Ledger() {
       setBindMsg('绑定失败：' + (e.message || String(e)));
     } finally {
       setSavingBind(false);
+    }
+  };
+
+  // ===== 核销码核销登记：使用即记利润（成本默认 0，利润全额进当天） =====
+  const doRedeem = () => {
+    if (redeemSaving) return;
+    const n = Math.max(1, Number(redeemCount) || 1);
+    const price = Number(redeemPrice) || 0;
+    if (price <= 0) { setRedeemMsg('请填写核销码单价'); return; }
+    setRedeemSaving(true);
+    setRedeemMsg('');
+    try {
+      const now = new Date();
+      const pad = (x: number) => String(x).padStart(2, '0');
+      const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      // 核销码号：填了用填的（按行/逗号分隔），没填自动编号
+      const manual = redeemCodes.split(/[\n,，\s]+/).map((s) => s.trim()).filter(Boolean);
+      let codes: string[];
+      if (manual.length > 0) {
+        codes = manual.slice(0, n);
+        while (codes.length < n) codes.push(genCodes(date, 1, codes)[0]);
+      } else {
+        codes = genCodes(date, n, redemptions.flatMap((r) => r.codes));
+      }
+      const rec: RedemptionRecord = {
+        id: 'RD' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+        date,
+        time,
+        cinema: redeemCinema,
+        count: n,
+        codes,
+        unitPrice: price,
+        income: price * n,
+        batchId: redeemBatchId,
+        profit: price * n, // 成本默认 0（赠券无成本）
+      };
+      // 关联批次（voucher 类型）：自动扣赠券库存
+      if (redeemBatchId) {
+        const all = loadBatches();
+        const b = all.find((x) => x.id === redeemBatchId);
+        if (b && b.type === 'voucher') {
+          const newB = { ...b, giftVouchersLeft: Math.max(0, (b.giftVouchersLeft || 0) - n) };
+          saveBatches(all.map((x) => (x.id === b.id ? newB : x)));
+          setBatches(refreshBatchStatuses(loadBatches()));
+        }
+      }
+      const list = addRedemption(rec);
+      setRedemptions(list);
+      // 重置表单
+      setRedeemCount(1);
+      setRedeemCodes('');
+      setRedeemBatchId('');
+      setRedeemMsg('');
+      setRedeemOpen(false);
+    } catch (e: any) {
+      setRedeemMsg('登记失败：' + (e.message || String(e)));
+    } finally {
+      setRedeemSaving(false);
     }
   };
 
@@ -439,14 +508,15 @@ export default function Ledger() {
     setEditingDate('');
   };
 
-  // 按日期聚合：电影票(张数/订单/实付/利润) + 充值(单数/金额) + 卖品(订单/金额/积分)
+  // 按日期聚合：电影票(张数/订单/实付/利润) + 充值(单数/金额) + 卖品(订单/金额/积分) + 核销码(张数/收入/利润)
   const daily = useMemo(() => {
     type DayStat = {
       tickets: number; income: number; count: number; profit: number; cost: number;
       rechargeCount: number; rechargeAmount: number;
       snackCount: number; snackPay: number; snackScore: number;
+      redeemCount: number; redeemIncome: number;
     };
-    const empty = (): DayStat => ({ tickets: 0, income: 0, count: 0, profit: 0, cost: 0, rechargeCount: 0, rechargeAmount: 0, snackCount: 0, snackPay: 0, snackScore: 0 });
+    const empty = (): DayStat => ({ tickets: 0, income: 0, count: 0, profit: 0, cost: 0, rechargeCount: 0, rechargeAmount: 0, snackCount: 0, snackPay: 0, snackScore: 0, redeemCount: 0, redeemIncome: 0 });
     const map = new Map<string, DayStat>();
     orders.forEach((o) => {
       const d = orderDate(o);
@@ -483,6 +553,15 @@ export default function Ledger() {
       cur.count += 1;
       map.set(d, cur);
     });
+    // 核销码核销记录：使用即记利润（成本默认 0，全额计入当天）
+    redemptions.forEach((r) => {
+      if (!r.date) return;
+      const cur = map.get(r.date) || empty();
+      cur.redeemCount += r.count;
+      cur.redeemIncome += r.income;
+      cur.profit += r.profit;
+      map.set(r.date, cur);
+    });
     // 应用手动覆盖（编辑过的日期用手动值）
     Object.entries(overrides).forEach(([date, ov]) => {
       if (!map.has(date)) {
@@ -494,7 +573,7 @@ export default function Ledger() {
       if (ov.profit != null) cur.profit = ov.profit;
     });
     return map;
-  }, [orders, prices, overrides]);
+  }, [orders, prices, overrides, redemptions]);
 
   // 当月天数网格
   const days = useMemo(() => {
@@ -511,7 +590,7 @@ export default function Ledger() {
     return cells;
   }, [viewDate]);
 
-  // 月统计（含充值/卖品）
+  // 月统计（含充值/卖品/核销码）
   const monthStats = useMemo(() => {
     const { y, m } = viewDate;
     const prefix = `${y}-${String(m + 1).padStart(2, '0')}`;
@@ -524,6 +603,8 @@ export default function Ledger() {
     let snackCount = 0;
     let snackPay = 0;
     let snackScore = 0;
+    let redeemCount = 0;
+    let redeemIncome = 0;
     daily.forEach((v, d) => {
       if (d.startsWith(prefix)) {
         tickets += v.tickets;
@@ -535,12 +616,14 @@ export default function Ledger() {
         snackCount += v.snackCount;
         snackPay += v.snackPay;
         snackScore += v.snackScore;
+        redeemCount += v.redeemCount;
+        redeemIncome += v.redeemIncome;
       }
     });
-    return { tickets, income, count, profit, rechargeCount, rechargeAmount, snackCount, snackPay, snackScore };
+    return { tickets, income, count, profit, rechargeCount, rechargeAmount, snackCount, snackPay, snackScore, redeemCount, redeemIncome };
   }, [daily, viewDate]);
 
-  // 年统计（含充值/卖品）
+  // 年统计（含充值/卖品/核销码）
   const yearStats = useMemo(() => {
     const prefix = `${viewDate.y}-`;
     let tickets = 0;
@@ -552,6 +635,8 @@ export default function Ledger() {
     let snackCount = 0;
     let snackPay = 0;
     let snackScore = 0;
+    let redeemCount = 0;
+    let redeemIncome = 0;
     daily.forEach((v, d) => {
       if (d.startsWith(prefix)) {
         tickets += v.tickets;
@@ -563,9 +648,11 @@ export default function Ledger() {
         snackCount += v.snackCount;
         snackPay += v.snackPay;
         snackScore += v.snackScore;
+        redeemCount += v.redeemCount;
+        redeemIncome += v.redeemIncome;
       }
     });
-    return { tickets, income, count, profit, rechargeCount, rechargeAmount, snackCount, snackPay, snackScore };
+    return { tickets, income, count, profit, rechargeCount, rechargeAmount, snackCount, snackPay, snackScore, redeemCount, redeemIncome };
   }, [daily, viewDate]);
 
   // 选中日期的全部订单（电影票 + 充值 + 卖品）
@@ -573,15 +660,6 @@ export default function Ledger() {
     if (!selectedDay) return [];
     return orders.filter((o) => orderDate(o) === selectedDay && (isMovieOrder(o) || isRechargeOrder(o) || parseSnackOrder(o).count > 0));
   }, [orders, selectedDay]);
-
-  const prevMonth = () => {
-    setViewDate(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }));
-    setSelectedDay('');
-  };
-  const nextMonth = () => {
-    setViewDate(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }));
-    setSelectedDay('');
-  };
 
   if (!account && accounts.length === 0) {
     return <div className="p-6 text-center text-gray-400 py-12">请先添加账号</div>;
@@ -657,135 +735,80 @@ export default function Ledger() {
         </div>
       )}
 
-      {/* 年统计 + 月统计 */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-pink-50 rounded-lg border border-pink-200 p-4">
-          <p className="text-xs text-pink-600 font-medium flex items-center gap-1">
-            <TrendingUp className="w-3.5 h-3.5" /> {viewDate.y} 年统计
-          </p>
-          <div className="grid grid-cols-3 gap-3 mt-3">
-            <div>
-              <p className="text-xl font-bold text-pink-600">{yearStats.tickets}</p>
-              <p className="text-xs text-pink-500">出票（张）</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold text-pink-600">¥{yearStats.income.toFixed(0)}</p>
-              <p className="text-xs text-pink-500">电影票实付</p>
-            </div>
-            <div>
-              <p className={`text-xl font-bold ${yearStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                {yearStats.profit >= 0 ? '+' : ''}¥{yearStats.profit.toFixed(0)}
-              </p>
-              <p className="text-xs text-gray-500">利润</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold text-blue-600">¥{yearStats.rechargeAmount.toFixed(0)}</p>
-              <p className="text-xs text-blue-500">充值总额</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold text-orange-500">¥{yearStats.snackPay.toFixed(0)}</p>
-              <p className="text-xs text-orange-500">卖品金额</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold text-purple-600">{yearStats.snackScore}</p>
-              <p className="text-xs text-purple-500">卖品积分</p>
-            </div>
-          </div>
-        </div>
-        <div className="bg-green-50 rounded-lg border border-green-200 p-4">
+      {/* 月统计（当月数据） */}
+      <div className="bg-green-50 rounded-lg border border-green-200 p-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <p className="text-xs text-green-600 font-medium flex items-center gap-1">
             <CalendarDays className="w-3.5 h-3.5" /> {viewDate.y} 年 {viewDate.m + 1} 月统计
           </p>
-          <div className="grid grid-cols-3 gap-3 mt-3">
-            <div>
-              <p className="text-xl font-bold text-green-600">{monthStats.tickets}</p>
-              <p className="text-xs text-green-500">出票（张）</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold text-green-600">¥{monthStats.income.toFixed(0)}</p>
-              <p className="text-xs text-green-500">电影票实付</p>
-            </div>
-            <div>
-              <p className={`text-xl font-bold ${monthStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                {monthStats.profit >= 0 ? '+' : ''}¥{monthStats.profit.toFixed(0)}
-              </p>
-              <p className="text-xs text-gray-500">利润</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold text-blue-600">¥{monthStats.rechargeAmount.toFixed(0)}</p>
-              <p className="text-xs text-blue-500">充值总额</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold text-orange-500">¥{monthStats.snackPay.toFixed(0)}</p>
-              <p className="text-xs text-orange-500">卖品金额</p>
-            </div>
-            <div>
-              <p className="text-xl font-bold text-purple-600">{monthStats.snackScore}</p>
-              <p className="text-xs text-purple-500">卖品积分</p>
-            </div>
+          {/* 今天核销码使用数量 */}
+          {(() => {
+            const t = daily.get(todayStr);
+            const n = t?.redeemCount || 0;
+            const inc = t?.redeemIncome || 0;
+            return (
+              <span className="text-xs text-green-700 bg-white border border-green-200 rounded-lg px-2.5 py-1 flex items-center gap-1.5">
+                <BadgeCheck className="w-3.5 h-3.5 text-green-600" />
+                今日核销码使用 <b className="text-green-700">{n}</b> 张
+                {inc > 0 && <span className="text-green-500">· 利润 +¥{inc.toFixed(0)}</span>}
+              </span>
+            );
+          })()}
+        </div>
+        <div className="grid grid-cols-4 gap-3 mt-3">
+          <div>
+            <p className="text-xl font-bold text-green-600">{monthStats.tickets}</p>
+            <p className="text-xs text-green-500">出票（张）</p>
+          </div>
+          <div>
+            <p className="text-xl font-bold text-green-600">¥{monthStats.income.toFixed(0)}</p>
+            <p className="text-xs text-green-500">电影票实付</p>
+          </div>
+          <div>
+            <p className={`text-xl font-bold ${monthStats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {monthStats.profit >= 0 ? '+' : ''}¥{monthStats.profit.toFixed(0)}
+            </p>
+            <p className="text-xs text-gray-500">利润（含核销码）</p>
+          </div>
+          <div>
+            <p className="text-xl font-bold text-purple-600">{monthStats.redeemCount}</p>
+            <p className="text-xs text-purple-500">核销码使用（张）</p>
+          </div>
+          <div>
+            <p className="text-xl font-bold text-blue-600">¥{monthStats.rechargeAmount.toFixed(0)}</p>
+            <p className="text-xs text-blue-500">充值总额</p>
+          </div>
+          <div>
+            <p className="text-xl font-bold text-orange-500">¥{monthStats.snackPay.toFixed(0)}</p>
+            <p className="text-xs text-orange-500">卖品金额</p>
+          </div>
+          <div>
+            <p className="text-xl font-bold text-purple-600">{monthStats.snackScore}</p>
+            <p className="text-xs text-purple-500">卖品积分</p>
+          </div>
+          <div>
+            <p className="text-xl font-bold text-pink-600">¥{monthStats.redeemIncome.toFixed(0)}</p>
+            <p className="text-xs text-pink-500">核销码收入</p>
           </div>
         </div>
       </div>
 
-      {/* 日历 */}
+      {/* 日历（只显示当月） */}
       <div className="bg-white rounded-lg border">
         <div className="flex items-center justify-between p-4 border-b flex-wrap gap-2">
           <div className="flex items-center gap-2">
-            <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-gray-100" title="上个月">
-              <ChevronLeft className="w-5 h-5" />
-            </button>
-            {/* 年份选择 */}
-            <div className="relative">
-              <button
-                onClick={() => setYearPickerOpen(!yearPickerOpen)}
-                className="px-3 py-1.5 text-base font-bold rounded-lg hover:bg-gray-100 border"
-              >
-                {viewDate.y} 年 ▾
-              </button>
-              {yearPickerOpen && (
-                <div className="absolute z-30 mt-1 bg-white border rounded-lg shadow-lg p-2 w-32 grid grid-cols-3 gap-1 max-h-56 overflow-auto">
-                  {Array.from({ length: 30 }, (_, i) => new Date().getFullYear() - i).map((y) => (
-                    <button
-                      key={y}
-                      onClick={() => {
-                        setViewDate(({ m }) => ({ y, m }));
-                        setYearPickerOpen(false);
-                        setSelectedDay('');
-                      }}
-                      className={`px-2 py-1 text-sm rounded ${
-                        y === viewDate.y ? 'bg-pink-500 text-white' : 'hover:bg-gray-100'
-                      }`}
-                    >
-                      {y}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            {/* 月份选择 */}
-            <div className="flex gap-0.5">
-              {Array.from({ length: 12 }, (_, i) => i).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => {
-                    setViewDate(({ y }) => ({ y, m }));
-                    setSelectedDay('');
-                  }}
-                  className={`px-2 py-1.5 text-xs rounded-lg ${
-                    m === viewDate.m ? 'bg-pink-500 text-white font-bold' : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  {m + 1}月
-                </button>
-              ))}
-            </div>
-            <button onClick={nextMonth} className="p-2 rounded-lg hover:bg-gray-100" title="下个月">
-              <ChevronRight className="w-5 h-5" />
-            </button>
+            <span className="px-3 py-1.5 text-base font-bold">
+              {viewDate.y} 年 {viewDate.m + 1} 月
+            </span>
+            <span className="text-xs text-gray-400">（仅当月数据）</span>
           </div>
-          <span className="text-sm text-gray-500">
-            {viewDate.y} 年 {viewDate.m + 1} 月出票记录
-          </span>
+          <button
+            onClick={() => setRedeemOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-purple-500 hover:bg-purple-600 text-white rounded-lg"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            核销码登记
+          </button>
         </div>
         <div className="grid grid-cols-7 border-b bg-gray-50">
           {weekdays.map((w) => (
@@ -841,6 +864,11 @@ export default function Ledger() {
                         {stat.snackPay > 0 && <p>金额 ¥{stat.snackPay.toFixed(0)}</p>}
                         {stat.snackScore > 0 && <p>积分 {stat.snackScore}</p>}
                       </div>
+                    )}
+                    {stat.redeemCount > 0 && (
+                      <p className="text-xs text-purple-600 font-medium">
+                        🎫 核销码 {stat.redeemCount} 张 · +¥{stat.redeemIncome.toFixed(0)}
+                      </p>
                     )}
                   </div>
                 )}
@@ -978,9 +1006,35 @@ export default function Ledger() {
               })}
             </div>
           )}
+          {/* 当天核销码使用记录（每张都有记录） */}
+          {(() => {
+            const list = redemptions.filter((r) => r.date === selectedDay);
+            if (list.length === 0) return null;
+            const total = list.reduce((s, r) => s + r.count, 0);
+            return (
+              <div className="mt-3 pt-3 border-t">
+                <p className="text-xs font-medium text-purple-600 mb-2">
+                  🎫 当天核销码使用（{total} 张 · 利润 +¥{list.reduce((s, r) => s + r.profit, 0).toFixed(0)}）
+                </p>
+                <div className="space-y-1.5 max-h-48 overflow-auto">
+                  {list.map((r) => (
+                    <div key={r.id} className="bg-purple-50 border border-purple-100 rounded-lg p-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-gray-700 font-medium">
+                          {r.time} · {r.cinema === 'jinyi' ? '金逸' : '嘉和'} · {r.count} 张 · ¥{r.unitPrice}/张
+                        </span>
+                        <span className="text-purple-600 font-bold shrink-0">+¥{r.profit.toFixed(0)}</span>
+                      </div>
+                      {r.batchId && <p className="text-gray-400 mt-0.5">批次：{r.batchId}</p>}
+                      <p className="text-gray-400 font-mono mt-0.5 break-all">{r.codes.join('、')}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
-      {/* 编辑当天数据弹窗 */}
       {editingDate && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setEditingDate('')}>
           <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-4" onClick={(e) => e.stopPropagation()}>
@@ -1181,6 +1235,136 @@ export default function Ledger() {
               </button>
               <button onClick={() => setBindOrder(null)} className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200">取消</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 核销码核销登记弹窗 */}
+      {redeemOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setRedeemOpen(false)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-4 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-medium text-lg">核销码核销登记</h3>
+              <button onClick={() => setRedeemOpen(false)} className="p-1.5 text-gray-400 hover:bg-gray-100 rounded-lg">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-gray-400">
+              核销码使用/售出即登记，利润自动计入当天（成本默认 0 = 充值赠送无成本）。每张核销码都有记录。
+            </p>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">影院</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRedeemCinema('jinyi');
+                    const rule = getRuleForDate(loadRules(), todayStr);
+                    setRedeemPrice(rule.jinyiCode);
+                  }}
+                  className={`py-2 text-sm rounded-lg border transition-colors ${
+                    redeemCinema === 'jinyi'
+                      ? 'bg-purple-500 text-white border-purple-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-purple-300'
+                  }`}
+                >
+                  金逸巨幕
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRedeemCinema('jiahe');
+                    const rule = getRuleForDate(loadRules(), todayStr);
+                    setRedeemPrice(rule.jiaheCode);
+                  }}
+                  className={`py-2 text-sm rounded-lg border transition-colors ${
+                    redeemCinema === 'jiahe'
+                      ? 'bg-purple-500 text-white border-purple-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-purple-300'
+                  }`}
+                >
+                  嘉和
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">使用数量（张）</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={redeemCount}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '' || /^\d+$/.test(v)) setRedeemCount(Number(v) || 0);
+                  }}
+                  className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">单价（元/张）</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.5"
+                  value={redeemPrice}
+                  onChange={(e) => setRedeemPrice(Number(e.target.value) || 0)}
+                  className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">核销码号（可选，每行一个；不填自动编号）</label>
+              <textarea
+                value={redeemCodes}
+                onChange={(e) => setRedeemCodes(e.target.value)}
+                rows={3}
+                placeholder={'每行一个核销码号\n如：KJ20260820-001'}
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400 font-mono"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">关联活动批次（可选，选后自动扣赠券库存）</label>
+              <select
+                value={redeemBatchId}
+                onChange={(e) => setRedeemBatchId(e.target.value)}
+                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+              >
+                <option value="">不关联批次</option>
+                {batches.filter((b) => b.status === 'active' && b.type === 'voucher').map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.id} · {b.accountName} · 赠券剩 {b.giftVouchersLeft} 张
+                  </option>
+                ))}
+              </select>
+            </div>
+            {/* 利润预览（成本默认 0） */}
+            <div className="bg-purple-50 border border-purple-100 rounded-lg p-3 text-xs space-y-0.5">
+              <p className="text-gray-500">
+                核销码收入：¥{((Number(redeemPrice) || 0) * Math.max(1, Number(redeemCount) || 1)).toFixed(2)}
+                （{(Number(redeemPrice) || 0).toFixed(0)} × {Math.max(1, Number(redeemCount) || 1)} 张）
+              </p>
+              <p className="text-gray-500">成本：¥0（赠券）</p>
+              <p className="font-bold text-purple-600">
+                利润：+¥{((Number(redeemPrice) || 0) * Math.max(1, Number(redeemCount) || 1)).toFixed(2)}
+              </p>
+            </div>
+            {redeemMsg && <p className="text-xs text-red-500">{redeemMsg}</p>}
+            <button
+              onClick={doRedeem}
+              disabled={redeemSaving}
+              className="w-full py-2 text-sm bg-purple-500 hover:bg-purple-600 text-white rounded-lg flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              {redeemSaving ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" /> 登记中...
+                </>
+              ) : (
+                <>
+                  <BadgeCheck className="w-4 h-4" /> 确认登记（利润进当天）
+                </>
+              )}
+            </button>
           </div>
         </div>
       )}
