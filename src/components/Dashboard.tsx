@@ -3,20 +3,9 @@ import { Film, Ticket, Wallet, Star, AlertCircle, RefreshCw, User, CalendarDays,
 import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import { loadOverrides, saveOverride } from '../store/ledgerOverride';
+import { loadRules, getRuleForDate } from '../store/batchStore';
 import type { Page } from '../App';
 
-// 固定卖价（与记账日历一致，localStorage 持久化）
-const PRICES_KEY = 'ledger_prices';
-function loadPrices(): { jinyi: number; jiahe: number } {
-  try {
-    const raw = localStorage.getItem(PRICES_KEY);
-    if (raw) {
-      const p = JSON.parse(raw);
-      return { jinyi: Number(p.jinyi) || 30, jiahe: Number(p.jiahe) || 25 };
-    }
-  } catch {}
-  return { jinyi: 30, jiahe: 25 };
-}
 function isJiahe(order: any): boolean {
   const name = String(order.cinema_name || order.cinemaName || '');
   return name.includes('嘉和');
@@ -123,12 +112,13 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         }
       }
       // 统计今日成功电影票订单：只算 type=1 + status=7 + 金额>=0（排除卖品/储值/退票/退款）
-      // 出票张数 count / 订单数 orderCount / 买票收入 income=实付总和 / 利润 profit=固定卖价×票数-实付
-      const prices = loadPrices();
+      // 出票张数 count / 订单数 orderCount / 买票收入 income=实付总和 / 利润 profit=卖价×票数-实付
       let count = 0;
       let orderCount = 0;
       let income = 0;
       let saleIncome = 0;
+      // 卖价统一用价格规则（与账本一致）
+      const dayRule = getRuleForDate(loadRules(), todayStr);
       all.forEach((o: any) => {
         // create_time 可能是毫秒时间戳（如 1772606552000）或日期字符串，统一转成 yyyy-mm-dd
         const raw = o.create_time ?? o.createTime ?? '';
@@ -156,7 +146,9 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         const payAmount = Number(o.pay_amount ?? o.payAmount ?? 0);
         if (payAmount < 0) return;
         const n = orderTickets(o);
-        const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi;
+        // 卖价统一用价格规则（金逸33/嘉和30，与账本一致）
+        const rule = getRuleForDate(loadRules(), todayStr);
+        const unitPrice = isJiahe(o) ? rule.jiaheSell : rule.jinyiSell;
         count += n; // 出票张数
         orderCount += 1; // 订单数
         income += payAmount; // 买票收入 = 实付总和
@@ -397,7 +389,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          电影票实付 = 成功电影票订单实付金额总和；利润 = 固定卖价×票数（金逸¥{loadPrices().jinyi}/嘉和¥{loadPrices().jiahe}）− 实付；只统计成功订单，不含卖品/退票/储值；手动编辑后与记账日历同步
+          电影票实付 = 成功电影票订单实付金额总和；利润 = 卖价×票数（金逸¥{getRuleForDate(loadRules(), todayStr).jinyiSell}/嘉和¥{getRuleForDate(loadRules(), todayStr).jiaheSell}，价格规则）− 实付；只统计成功订单，不含卖品/退票/储值；手动编辑后与记账日历同步
         </p>
       </div>
 
