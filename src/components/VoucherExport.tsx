@@ -17,7 +17,7 @@ import { VOUCHER_TEMPLATE } from '../template_voucher';
 // ===== 兑换券链接导出（输入数量 → 生成 → 只给链接；导出记录独立窗口） =====
 export default function VoucherExport() {
   const { accounts, refreshActiveAccount } = useStore();
-  const [count, setCount] = useState(5);
+  const [count, setCount] = useState('5');
   const [exporting, setExporting] = useState(false);
   const [result, setResult] = useState<{ url: string; count: number; phones: string[] } | null>(null);
   const [error, setError] = useState('');
@@ -26,6 +26,43 @@ export default function VoucherExport() {
   const [records, setRecords] = useState<any[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [cancelling, setCancelling] = useState<string | null>(null);
+  // 券码核销状态（未核销/已核销/已过期）
+  const [statusMap, setStatusMap] = useState<Record<string, string>>({});
+  // 复制链接反馈
+  const [copiedId, setCopiedId] = useState('');
+
+  // 并发限制工具（查券状态用，避免一次打爆接口）
+  const mapLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> => {
+    const results: R[] = new Array(items.length);
+    let idx = 0;
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (idx < items.length) {
+        const i = idx++;
+        results[i] = await fn(items[i]);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  };
+
+  // 查询单张券核销状态：status 1=未使用(未核销) 2=已使用(已核销) 3=已过期
+  const fetchVoucherStatus = async (code: string): Promise<{ code: string; text: string }> => {
+    try {
+      const resp = await api.getVoucherUseByNo(code);
+      if (resp.success && resp.result) {
+        const r = resp.result as any;
+        const st = String(r.status ?? r.useStatus ?? '');
+        if (st === '1') return { code, text: '未核销' };
+        if (st === '2') return { code, text: '已核销' };
+        if (st === '3') return { code, text: '已过期' };
+        const dict = String(r.statusDictText || '');
+        if (dict) return { code, text: dict };
+      }
+    } catch (e) {
+      console.error('voucher status failed:', code, e);
+    }
+    return { code, text: '' };
+  };
 
   // 拉取某账号的未使用未导出电影票兑换券（翻页拉全量，不限200）
   const fetchUnusedVouchers = async (acc: any, excludeCodes: Set<string>): Promise<any[]> => {
@@ -179,7 +216,20 @@ export default function VoucherExport() {
     setLoadingRecords(true);
     try {
       const resp = await (window as any).electronAPI?.getVoucherExportRecords?.();
-      if (resp?.success) setRecords(resp.records || []);
+      if (resp?.success) {
+        const list = resp.records || [];
+        setRecords(list);
+        // 收集所有券码，并发（限 4）查询实时核销状态
+        const allCodes = Array.from(new Set(list.flatMap((r: any) => r.codes || []))) as string[];
+        if (allCodes.length > 0) {
+          const results = await mapLimit(allCodes, 4, fetchVoucherStatus);
+          const m: Record<string, string> = {};
+          results.forEach(({ code, text }) => {
+            if (text) m[code] = text;
+          });
+          setStatusMap(m);
+        }
+      }
     } catch (e) {
       console.error('load records failed:', e);
     } finally {
@@ -239,7 +289,14 @@ export default function VoucherExport() {
           min={1}
           max={50}
           value={count}
-          onChange={(e) => setCount(Number(e.target.value) || 1)}
+          onChange={(e) => {
+            const v = e.target.value;
+            // 允许删空重输；只接受数字
+            if (v === '' || /^\d+$/.test(v)) setCount(v);
+          }}
+          onBlur={() => {
+            if (count === '' || Number(count) < 1) setCount('1');
+          }}
           className="w-20 px-2 py-2 text-sm border rounded-lg outline-none focus:border-pink-400 text-center"
         />
         <span className="text-xs text-gray-500">张</span>
@@ -340,16 +397,56 @@ export default function VoucherExport() {
                     <div className="text-gray-500">
                       共 {r.codes?.length || 0} 张券
                       {r.codes && r.codes.length > 0 && (
-                        <span className="block text-gray-400 truncate mt-0.5 font-mono">
-                          {r.codes.join('、')}
-                        </span>
+                        <div className="mt-1 space-y-0.5">
+                          {r.codes.map((code: string, ci: number) => {
+                            const st = statusMap[code];
+                            const stCls =
+                              st === '未核销'
+                                ? 'bg-green-100 text-green-600'
+                                : st === '已核销'
+                                  ? 'bg-gray-200 text-gray-400'
+                                  : st === '已过期'
+                                    ? 'bg-orange-100 text-orange-500'
+                                    : 'bg-gray-100 text-gray-400';
+                            return (
+                              <div key={ci} className="flex items-center justify-between gap-2">
+                                <span className="font-mono text-[11px] text-gray-600">{code}</span>
+                                {st ? (
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ${stCls}`}>{st}</span>
+                                ) : (
+                                  <span className="text-[10px] text-gray-300 shrink-0">查询中...</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
                       )}
                     </div>
                     {r.url ? (
-                      <a href={r.url} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline break-all flex items-center gap-1">
-                        <ExternalLink className="w-3 h-3 shrink-0" />
-                        {r.url}
-                      </a>
+                      <div className="flex items-center gap-1">
+                        <a
+                          href={r.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-500 hover:underline text-[11px] flex items-center gap-1 flex-1 min-w-0"
+                        >
+                          <ExternalLink className="w-3 h-3 shrink-0" />
+                          <span className="break-all">{r.url}</span>
+                        </a>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(r.url);
+                            setCopiedId(String(i));
+                            setTimeout(() => setCopiedId(''), 1500);
+                          }}
+                          title="复制链接"
+                          className={`shrink-0 p-1.5 rounded-lg transition-colors ${
+                            copiedId === String(i) ? 'text-green-600 bg-green-50' : 'text-gray-500 hover:bg-blue-50 hover:text-blue-600'
+                          }`}
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     ) : (
                       <span className="text-gray-400">（未生成链接）</span>
                     )}
