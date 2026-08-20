@@ -44,9 +44,22 @@ async function fetchVoucherDetail(code: string): Promise<any> {
   return null;
 }
 
-// 从券详情/券列表取使用时间
+// 从券详情/券列表取使用时间（覆盖常见字段名）
 function pickUseTime(r: any): string {
-  const t = r?.useTime ?? r?.usedTime ?? r?.use_time ?? r?.verifyTime ?? r?.updateTime ?? r?.update_time ?? '';
+  if (!r) return '';
+  const t =
+    r?.useTime ??
+    r?.usedTime ??
+    r?.use_time ??
+    r?.used_time ??
+    r?.useTimeStr ??
+    r?.verifyTime ??
+    r?.verify_time ??
+    r?.completeTime ??
+    r?.finishTime ??
+    r?.updateTime ??
+    r?.update_time ??
+    '';
   return t ? String(t).substring(0, 19) : '';
 }
 
@@ -193,18 +206,21 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
       }
     }
     if (monthUsed.length > 0) {
-      // 缺时间的查详情（并发 3）
-      const filled = await mapLimit(monthUsed, 3, async (item) => {
+      // 缺时间的查详情（并发 5）
+      const filled = await mapLimit(monthUsed, 5, async (item) => {
         if (item.useTime) return item;
         const detail = await fetchVoucherDetail(item.code);
         const t = pickUseTime(detail);
         return t ? { ...item, useTime: t } : item;
       });
-      // 核销时间在本月的 → 补记账（按实际核销时间按天归属）
+      // 核销时间在本月的 → 按实际核销时间归属补记
       const inMonth = filled.filter((x) => x.useTime && x.useTime.substring(0, 7) === monthPrefix && !recordedCodes.has(x.code));
-      if (inMonth.length > 0) {
+      // 核销时间取不到的已使用券 → 也补记（归今天，保证当月数量/利润不漏）
+      const noTime = filled.filter((x) => !x.useTime && !recordedCodes.has(x.code));
+      const toRecord = [...inMonth, ...noTime.map((x) => ({ ...x, useTime: date + ' ' + time }))];
+      if (toRecord.length > 0) {
         const byDay = new Map<string, { code: string; cinema: 'jinyi' | 'jiahe'; useTime: string }[]>();
-        inMonth.forEach((x) => {
+        toRecord.forEach((x) => {
           const d = x.useTime.substring(0, 10);
           const g = byDay.get(d) || [];
           g.push({ code: x.code, cinema: x.cinema, useTime: x.useTime });
@@ -214,7 +230,7 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
           const t2 = list[0].useTime.length >= 16 ? list[0].useTime.substring(11, 16) : time;
           usedProfit += addRedemptionGroup(list, d, t2);
         });
-        extraUsed += inMonth.length;
+        extraUsed += toRecord.length;
       }
     }
   } catch (e) {

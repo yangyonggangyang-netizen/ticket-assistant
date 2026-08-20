@@ -851,7 +851,7 @@ export default function Ledger() {
         </div>
         <div className="grid grid-cols-7">
           {days.map((cell, i) => {
-            if (!cell) return <div key={`empty-${i}`} className="h-[104px]" />;
+            if (!cell) return <div key={`empty-${i}`} className="min-h-[136px]" />;
             const stat = daily.get(cell.date);
             const isToday = cell.date === todayStr;
             const isSelected = cell.date === selectedDay;
@@ -860,7 +860,7 @@ export default function Ledger() {
               <button
                 key={cell.date}
                 onClick={() => setSelectedDay(isSelected ? '' : cell.date)}
-                className={`h-[104px] overflow-hidden border-t border-r text-left p-1.5 transition-colors relative flex flex-col ${
+                className={`min-h-[136px] border-t border-r text-left p-1.5 transition-colors relative flex flex-col ${
                   isSelected ? 'bg-pink-50' : stat ? 'hover:bg-pink-50/40' : 'hover:bg-gray-50'
                 } ${i % 7 === 6 ? 'border-r-0' : ''}`}
               >
@@ -872,7 +872,7 @@ export default function Ledger() {
                   {cell.day}
                 </span>
                 {stat && (
-                  <div className="mt-0.5 space-y-0.5 min-h-0 flex-1 overflow-hidden">
+                  <div className="mt-1 space-y-1 min-h-0 flex-1 overflow-hidden">
                     {/* 左列：电影票 */}
                     <div className="space-y-0.5">
                       <p className="text-xs text-pink-600 font-semibold flex items-center gap-1">
