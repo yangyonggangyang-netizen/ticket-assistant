@@ -30,6 +30,7 @@ export default function Accounts() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [copiedPhoneId, setCopiedPhoneId] = useState<string | null>(null);
+  const [copiedTokenId, setCopiedTokenId] = useState<string | null>(null);
   const [pwdAccId, setPwdAccId] = useState<string | null>(null);
   const [pwdValue, setPwdValue] = useState('');
   const [pwdConfirm, setPwdConfirm] = useState('');
@@ -272,6 +273,18 @@ export default function Accounts() {
       await navigator.clipboard.writeText(acc.phone);
       setCopiedPhoneId(acc.id);
       setTimeout(() => setCopiedPhoneId(null), 1500);
+    } catch (e) {
+      alert('复制失败');
+    }
+  };
+
+  // 复制 token + memberId（手机 H5 查券用）
+  const copyLoginInfo = async (acc: Account) => {
+    if (!acc.token || !acc.memberId) return;
+    try {
+      await navigator.clipboard.writeText(acc.token + '\n' + acc.memberId);
+      setCopiedTokenId(acc.id);
+      setTimeout(() => setCopiedTokenId(null), 2000);
     } catch (e) {
       alert('复制失败');
     }
@@ -1027,6 +1040,18 @@ export default function Accounts() {
                   {acc.score != null && <span>⭐ {acc.score}</span>}
                   {acc.voucherNum != null && <span>🎫 {acc.voucherNum} 张券</span>}
                 </div>
+                <button
+                  onClick={() => copyLoginInfo(acc)}
+                  className="mt-2 flex items-center gap-1 text-[11px] bg-purple-50 text-purple-600 px-2 py-1 rounded-lg hover:bg-purple-100"
+                  title="复制 token 和 memberId（手机 H5 查券用）"
+                >
+                  {copiedTokenId === acc.id ? (
+                    <Check className="w-3 h-3 text-green-500" />
+                  ) : (
+                    <KeyRound className="w-3 h-3" />
+                  )}
+                  {copiedTokenId === acc.id ? '已复制' : '复制登录信息（手机查券）'}
+                </button>
               </div>
               <div className="flex gap-2">
                 {activeAccountId !== acc.id && (
