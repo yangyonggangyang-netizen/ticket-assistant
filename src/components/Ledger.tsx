@@ -851,7 +851,7 @@ export default function Ledger() {
         </div>
         <div className="grid grid-cols-7">
           {days.map((cell, i) => {
-            if (!cell) return <div key={`empty-${i}`} className="min-h-[92px]" />;
+            if (!cell) return <div key={`empty-${i}`} className="h-[104px]" />;
             const stat = daily.get(cell.date);
             const isToday = cell.date === todayStr;
             const isSelected = cell.date === selectedDay;
@@ -860,45 +860,45 @@ export default function Ledger() {
               <button
                 key={cell.date}
                 onClick={() => setSelectedDay(isSelected ? '' : cell.date)}
-                className={`min-h-[96px] border-t border-r text-left p-2 transition-colors relative ${
+                className={`h-[104px] overflow-hidden border-t border-r text-left p-1.5 transition-colors relative flex flex-col ${
                   isSelected ? 'bg-pink-50' : stat ? 'hover:bg-pink-50/40' : 'hover:bg-gray-50'
                 } ${i % 7 === 6 ? 'border-r-0' : ''}`}
               >
                 <span
-                  className={`inline-flex w-7 h-7 items-center justify-center rounded-full text-sm ${
+                  className={`inline-flex w-6 h-6 shrink-0 items-center justify-center rounded-full text-xs ${
                     isToday ? 'bg-pink-500 text-white font-bold' : 'text-gray-700'
                   }`}
                 >
                   {cell.day}
                 </span>
                 {stat && (
-                  <div className="mt-1 space-y-1">
+                  <div className="mt-0.5 space-y-0.5 min-h-0 flex-1 overflow-hidden">
                     {/* 左列：电影票 */}
                     <div className="space-y-0.5">
-                      <p className="text-sm text-pink-600 font-semibold flex items-center gap-1">
-                        <Ticket className="w-4 h-4" /> {stat.tickets} 张
+                      <p className="text-xs text-pink-600 font-semibold flex items-center gap-1">
+                        <Ticket className="w-3 h-3 shrink-0" /> {stat.tickets} 张
                         {isOverridden && <span className="text-[9px] bg-pink-200 text-pink-700 rounded px-1">改</span>}
                       </p>
-                      <p className="text-sm text-green-600 font-medium flex items-center gap-1">
-                        <Banknote className="w-4 h-4" /> ¥{stat.income.toFixed(0)}
+                      <p className="text-xs text-green-600 font-medium flex items-center gap-1">
+                        <Banknote className="w-3 h-3 shrink-0" /> ¥{stat.income.toFixed(0)}
                       </p>
-                      <p className={`text-sm flex items-center gap-1 ${stat.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      <p className={`text-xs flex items-center gap-1 ${stat.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                         {stat.profit >= 0 ? '▲' : '▼'} {stat.profit >= 0 ? '+' : ''}¥{stat.profit.toFixed(0)}
                       </p>
                     </div>
                     {/* 右列：充值/卖品（换行显示，不挤一行） */}
                     {stat.rechargeCount > 0 && (
-                      <p className="text-xs text-blue-600 font-medium">💰 充值 ¥{stat.rechargeAmount.toFixed(0)}</p>
+                      <p className="text-[11px] text-blue-600 font-medium leading-tight">💰 充值 ¥{stat.rechargeAmount.toFixed(0)}</p>
                     )}
                     {stat.snackCount > 0 && (
-                      <div className="text-xs text-orange-500">
+                      <div className="text-[11px] text-orange-500 leading-tight">
                         <p>🍿 卖品 {stat.snackCount} 单</p>
                         {stat.snackPay > 0 && <p>金额 ¥{stat.snackPay.toFixed(0)}</p>}
                         {stat.snackScore > 0 && <p>积分 {stat.snackScore}</p>}
                       </div>
                     )}
                     {stat.redeemCount > 0 && (
-                      <p className="text-xs text-purple-600 font-medium">
+                      <p className="text-[11px] text-purple-600 font-medium leading-tight">
                         🎫 核销码 {stat.redeemCount} 张 · +¥{stat.redeemIncome.toFixed(0)}
                       </p>
                     )}

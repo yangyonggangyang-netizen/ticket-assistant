@@ -4,6 +4,7 @@ import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import { loadOverrides, saveOverride } from '../store/ledgerOverride';
 import { loadRules, getRuleForDate } from '../store/batchStore';
+import { loadRedemptions } from '../store/redemptionStore';
 import type { Page } from '../App';
 
 function isJiahe(order: any): boolean {
@@ -174,7 +175,11 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         saleIncome += unitPrice * n; // 卖票收入（用于算利润）
       });
       const profit = saleIncome - income; // 利润 = 卖价×票数 - 实付
-      const stats = { count, orderCount, income, profit, loading: false };
+      // 加今日核销码利润（核销码登记/快照记账的收入，成本 0）
+      const redeemProfit = loadRedemptions()
+        .filter((r) => r.date === todayStr)
+        .reduce((s, r) => s + (r.profit || 0), 0);
+      const stats = { count, orderCount, income, profit: profit + redeemProfit, loading: false };
       setTodayStats(stats);
       setTodayOverridden(false);
       // 缓存今日数据（下次进入直接显示，不自动刷新）
@@ -413,7 +418,7 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          电影票实付 = 成功电影票订单实付金额总和；利润 = 卖价×票数（金逸¥{getRuleForDate(loadRules(), todayStr).jinyiSell}/嘉和¥{getRuleForDate(loadRules(), todayStr).jiaheSell}，价格规则）− 实付；只统计成功订单，不含卖品/退票/储值；手动编辑后与记账日历同步
+          电影票实付 = 成功电影票订单实付金额总和；利润 = 卖价×票数（金逸¥{getRuleForDate(loadRules(), todayStr).jinyiSell}/嘉和¥{getRuleForDate(loadRules(), todayStr).jiaheSell}，价格规则）− 实付 + 当日核销码利润；只统计成功订单，不含卖品/退票/储值；手动编辑后与记账日历同步
         </p>
       </div>
 

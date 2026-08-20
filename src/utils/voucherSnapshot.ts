@@ -147,17 +147,18 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
   };
 
   if (usedList.length > 0) {
-    // 查使用时间（并发 3），记账日期用实际核销时间（查不到用当天）
-    const usedWithTime = await mapLimit(
-      usedList.map((x) => ({ ...x, useTime: '' })),
-      3,
-      async (item) => {
-        const detail = await fetchVoucherDetail(item.code);
-        return { ...item, useTime: pickUseTime(detail) };
-      }
-    );
-    const recList = usedWithTime.map((x) => ({ code: x.code, cinema: x.cinema, useTime: x.useTime }));
-    usedProfit += addRedemptionGroup(recList, date, time);
+    // 按实际核销日期分组记账（查得到用实际日期，查不到用当天）
+    const byDay = new Map<string, { code: string; cinema: 'jinyi' | 'jiahe'; useTime: string }[]>();
+    usedWithTime.forEach((x) => {
+      const d = x.useTime ? x.useTime.substring(0, 10) : date;
+      const g = byDay.get(d) || [];
+      g.push({ code: x.code, cinema: x.cinema, useTime: x.useTime });
+      byDay.set(d, g);
+    });
+    byDay.forEach((list, d) => {
+      const t2 = list[0].useTime && list[0].useTime.length >= 16 ? list[0].useTime.substring(11, 16) : time;
+      usedProfit += addRedemptionGroup(list, d, t2);
+    });
   }
 
   // ===== 3. 补充同步：直接拉已使用券（state=2），当月未记账的补记 =====
