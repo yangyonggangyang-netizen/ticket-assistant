@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('capture:done', (event, data) => callback(data));
   },
   saveGoodsVoucherPng: (dataUrl, fileName) => ipcRenderer.invoke('goods:savePng', { dataUrl, fileName }),
+  copyGoodsVoucherPng: (dataUrl) => ipcRenderer.invoke('goods:copyPng', { dataUrl }),
   openGoodsSnapDir: () => ipcRenderer.invoke('goods:openSnapDir'),
   loadVoucherSnapshot: () => ipcRenderer.invoke('voucher:loadSnapshot'),
   saveVoucherSnapshot: (list) => ipcRenderer.invoke('voucher:saveSnapshot', { list }),

@@ -788,6 +788,18 @@ app.whenReady().then(() => {
       return { success: false, error: e.message || String(e) };
     }
   });
+  // 复制卖品券截图到剪贴板（生成后一键复制发送）
+  ipcMain.handle('goods:copyPng', async (event, { dataUrl }) => {
+    try {
+      const base64 = String(dataUrl || '').replace(/^data:image\/png;base64,/, '');
+      if (!base64) return { success: false, error: '图片数据为空' };
+      const img = nativeImage.createFromBuffer(Buffer.from(base64, 'base64'));
+      clipboard.writeImage(img);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
 
   // ===== 电影票核销券码快照（txt 记录，去重；刷新账号时对比：少了=已使用→自动记账） =====
   const SNAP_FILE = path.join(app.getPath('userData'), '卷码快照.txt');
