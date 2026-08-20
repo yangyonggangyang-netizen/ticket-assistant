@@ -62,8 +62,27 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
   }, [selectedCinemaId]);
 
   useEffect(() => {
-    // 今日出票统计所有账号，切账号不重新加载（避免一直转圈），手动刷新按钮可重新拉
+    // 今日出票：进页面先读缓存显示（不自动刷新），点「刷新」才重新拉取
     if (accounts.length > 0) {
+      // 手动覆盖优先
+      const ov = loadOverrides();
+      if (ov[todayStr]) {
+        setTodayStats((s) => ({ ...s, count: ov[todayStr].tickets, income: ov[todayStr].income, profit: ov[todayStr].profit ?? 0, loading: false }));
+        setTodayOverridden(true);
+        return;
+      }
+      try {
+        const raw = localStorage.getItem('dashboard_today_cache');
+        if (raw) {
+          const cache = JSON.parse(raw);
+          if (cache && cache.date === todayStr && cache.stats) {
+            setTodayStats(cache.stats);
+            setTodayOverridden(false);
+            return;
+          }
+        }
+      } catch {}
+      // 无缓存/缓存过期：静默拉一次（首次使用）
       loadTodayStats();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -155,8 +174,13 @@ export default function Dashboard({ setPage }: { setPage: (p: Page) => void }) {
         saleIncome += unitPrice * n; // 卖票收入（用于算利润）
       });
       const profit = saleIncome - income; // 利润 = 卖价×票数 - 实付
-      setTodayStats({ count, orderCount, income, profit, loading: false });
+      const stats = { count, orderCount, income, profit, loading: false };
+      setTodayStats(stats);
       setTodayOverridden(false);
+      // 缓存今日数据（下次进入直接显示，不自动刷新）
+      try {
+        localStorage.setItem('dashboard_today_cache', JSON.stringify({ date: todayStr, stats }));
+      } catch {}
     } catch (e) {
       console.error('Failed to load today stats:', e);
       setTodayStats((s) => ({ ...s, loading: false }));
