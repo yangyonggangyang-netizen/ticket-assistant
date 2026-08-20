@@ -4,7 +4,7 @@ import { useStore } from '../store/useStore';
 import { api } from '../api/client';
 import { loadOverrides, saveOverride, clearOverride } from '../store/ledgerOverride';
 import { loadRules, saveRules, PriceRule, loadBatches, saveBatches, loadOrders as loadBatchOrders, saveOrders as saveBatchOrders, refreshBatchStatuses, getRuleForDate } from '../store/batchStore';
-import { loadRedemptions, saveRedemptions, addRedemption, deleteRedemption, genCodes, RedemptionRecord } from '../store/redemptionStore';
+import { loadRedemptions, saveRedemptions, addRedemption, deleteRedemption, genCodes, repairRedemptions, loadPendingVouchers, RedemptionRecord } from '../store/redemptionStore';
 import BatchManager from './BatchManager';
 import GoodsVoucherQuery from './GoodsVoucherQuery';
 import { syncVoucherSnapshot } from '../utils/voucherSnapshot';
@@ -177,6 +177,25 @@ export default function Ledger() {
   // 视图切换：calendar=记账日历 / batches=活动批次 / goods=卖品券码
   const [view, setView] = useState<'calendar' | 'batches' | 'goods'>('calendar');
   const [priceRules, setPriceRules] = useState<PriceRule[]>(loadRules);
+  // 待核对核销码（查不到核销时间）
+  const [pendingVouchers, setPendingVouchers] = useState<any[]>(loadPendingVouchers);
+  const [showPending, setShowPending] = useState(false);
+
+  // 升级修复：一次性清理 v1.0.51/1.0.53 自动同步产生的错误统计（堆集在某天的超量记录）
+  useEffect(() => {
+    try {
+      if (!localStorage.getItem('ledger_redemption_repaired')) {
+        const r = repairRedemptions();
+        if (r.fixed > 0 || r.removed > 0) {
+          setRedemptions(loadRedemptions());
+          setPriceMsg(`已修复核销码数据：修正 ${r.fixed} 条日期，清理 ${r.removed} 条错误统计（请刷新重新统计）`);
+          setTimeout(() => setPriceMsg(''), 6000);
+        }
+        localStorage.setItem('ledger_redemption_repaired', '1');
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [newRule, setNewRule] = useState<{ from: string; to: string; jinyiCost: number; jinyiSell: number; jinyiCode: number; jiaheCost: number; jiaheSell: number; jiaheCode: number; note: string }>({
     from: '', to: '', jinyiCost: 35, jinyiSell: 33, jinyiCode: 30, jiaheCost: 30, jiaheSell: 30, jiaheCode: 28, note: '',
   });
@@ -819,6 +838,28 @@ export default function Ledger() {
         </div>
       </div>
 
+      {/* 待核对核销码（查不到核销时间，未计入任何一天） */}
+      {pendingVouchers.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
+          <p className="flex items-center justify-between gap-2 flex-wrap">
+            <span>⚠️ {pendingVouchers.length} 张核销码查不到核销时间，已放「待核对」，未计入任何一天</span>
+            <button onClick={() => setShowPending(!showPending)} className="underline shrink-0">
+              {showPending ? '收起' : '查看'}
+            </button>
+          </p>
+          {showPending && (
+            <div className="mt-2 max-h-40 overflow-auto space-y-1 bg-white/60 rounded-lg p-2">
+              {pendingVouchers.map((p, i) => (
+                <div key={i} className="flex justify-between gap-2 font-mono text-[11px]">
+                  <span className="break-all">{p.code}</span>
+                  <span className="shrink-0 text-amber-600">{p.cinema === 'jiahe' ? '嘉和' : '金逸'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 日历（当月 + 可翻看历史月份） */}
       <div className="bg-white rounded-lg border">
         <div className="flex items-center justify-between p-4 border-b flex-wrap gap-2">
@@ -1055,8 +1096,23 @@ export default function Ledger() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-gray-700 font-medium">
                           {r.time} · {r.cinema === 'jinyi' ? '金逸' : '嘉和'} · {r.count} 张 · ¥{r.unitPrice}/张
+                          {r.source === 'auto' && <span className="text-[9px] bg-purple-200 text-purple-700 rounded px-1 ml-1">自动</span>}
                         </span>
-                        <span className="text-purple-600 font-bold shrink-0">+¥{r.profit.toFixed(0)}</span>
+                        <span className="flex items-center gap-2 shrink-0">
+                          <span className="text-purple-600 font-bold">+¥{r.profit.toFixed(0)}</span>
+                          <button
+                            onClick={() => {
+                              if (confirm(`删除这条核销码记录？\n${r.cinema === 'jinyi' ? '金逸' : '嘉和'} ${r.count} 张，利润 +¥${r.profit.toFixed(0)}\n删除后可重新刷新统计`)) {
+                                deleteRedemption(r.id);
+                                setRedemptions(loadRedemptions());
+                              }
+                            }}
+                            className="text-red-400 hover:text-red-600"
+                            title="删除这条记录（重新统计用）"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </span>
                       </div>
                       {r.useTime && <p className="text-gray-400 mt-0.5">实际核销时间：{r.useTime}</p>}
                       {r.batchId && <p className="text-gray-400 mt-0.5">批次：{r.batchId}</p>}

@@ -1,9 +1,14 @@
 // ===== 券码快照同步（Accounts 与 Ledger 共用） =====
 // ①快照对比：统计所有账号电影票核销券码 → 对比旧快照 → 少了=已使用→自动记账（按实际核销时间归属）；多了=更新数量
-// ②补充同步：直接拉已使用券（state=2），核销时间在当月且未记账的 → 补记账（解决快照未覆盖的历史使用）
+// ②补充同步：直接拉已使用券（state=2），只补记「核销时间明确在当月」的券；查不到时间的进待核对，不计入当天
 import { api } from '../api/client';
 import { loadRules, getRuleForDate } from '../store/batchStore';
-import { loadRedemptions, addRedemption, RedemptionRecord } from '../store/redemptionStore';
+import {
+  loadRedemptions,
+  addRedemption,
+  addPendingVouchers,
+  RedemptionRecord,
+} from '../store/redemptionStore';
 
 interface SnapItem {
   code: string;
@@ -115,7 +120,10 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
   const addedList = current.filter((x) => !oldCodes.has(x.code));
 
   // ===== 2. 已使用（快照对比）→ 自动记账 =====
+  // 只记「核销时间明确」的券（按实际日期归属）；查不到时间的进待核对，不算到当天
   let usedProfit = 0;
+  let pendingCount = 0;
+  const pendingItems: { code: string; cinema: 'jinyi' | 'jiahe'; name: string }[] = [];
   const today = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   const date = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
@@ -151,6 +159,7 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
         batchId: '',
         profit: price * gList.length,
         useTime: firstTime || undefined,
+        source: 'auto',
       };
       addRedemption(rec);
       gList.forEach((x) => recordedCodes.add(x.code));
@@ -160,18 +169,40 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
   };
 
   if (usedList.length > 0) {
-    // 按实际核销日期分组记账（查得到用实际日期，查不到用当天）
-    const byDay = new Map<string, { code: string; cinema: 'jinyi' | 'jiahe'; useTime: string }[]>();
-    usedWithTime.forEach((x) => {
-      const d = x.useTime ? x.useTime.substring(0, 10) : date;
-      const g = byDay.get(d) || [];
-      g.push({ code: x.code, cinema: x.cinema, useTime: x.useTime });
-      byDay.set(d, g);
-    });
-    byDay.forEach((list, d) => {
-      const t2 = list[0].useTime && list[0].useTime.length >= 16 ? list[0].useTime.substring(11, 16) : time;
-      usedProfit += addRedemptionGroup(list, d, t2);
-    });
+    // 查使用时间（并发 3）
+    const usedWithTime = await mapLimit(
+      usedList.map((x) => ({ ...x, useTime: '' })),
+      3,
+      async (item) => {
+        const detail = await fetchVoucherDetail(item.code);
+        return { ...item, useTime: pickUseTime(detail) };
+      }
+    );
+    // 有核销时间的 → 按实际日期记账；查不到时间的 → 进待核对（不算当天）
+    const withTime = usedWithTime.filter((x) => x.useTime);
+    const withoutTime = usedWithTime.filter((x) => !x.useTime);
+    if (withTime.length > 0) {
+      const byDay = new Map<string, { code: string; cinema: 'jinyi' | 'jiahe'; useTime: string }[]>();
+      withTime.forEach((x) => {
+        const d = x.useTime.substring(0, 10);
+        const g = byDay.get(d) || [];
+        g.push({ code: x.code, cinema: x.cinema, useTime: x.useTime });
+        byDay.set(d, g);
+      });
+      byDay.forEach((list, d) => {
+        const t2 = list[0].useTime.length >= 16 ? list[0].useTime.substring(11, 16) : time;
+        usedProfit += addRedemptionGroup(list, d, t2);
+      });
+    }
+    if (withoutTime.length > 0) {
+      withoutTime.forEach((x) => {
+        if (!recordedCodes.has(x.code)) {
+          pendingItems.push({ code: x.code, cinema: x.cinema, name: x.name });
+          recordedCodes.add(x.code); // 待核对的不再重复处理
+        }
+      });
+      pendingCount += withoutTime.length;
+    }
   }
 
   // ===== 3. 补充同步：直接拉已使用券（state=2），当月未记账的补记 =====
@@ -206,21 +237,25 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
       }
     }
     if (monthUsed.length > 0) {
+      // 按券码去重（多账号可能返回同一张券）
+      const dedup = new Set<string>();
+      const uniq = monthUsed.filter((x) => {
+        if (dedup.has(x.code)) return false;
+        dedup.add(x.code);
+        return true;
+      });
       // 缺时间的查详情（并发 5）
-      const filled = await mapLimit(monthUsed, 5, async (item) => {
+      const filled = await mapLimit(uniq, 5, async (item) => {
         if (item.useTime) return item;
         const detail = await fetchVoucherDetail(item.code);
         const t = pickUseTime(detail);
         return t ? { ...item, useTime: t } : item;
       });
-      // 核销时间在本月的 → 按实际核销时间归属补记
+      // 只补记「核销时间明确在本月」的券（正确口径：按实际核销时间归属）
       const inMonth = filled.filter((x) => x.useTime && x.useTime.substring(0, 7) === monthPrefix && !recordedCodes.has(x.code));
-      // 核销时间取不到的已使用券 → 也补记（归今天，保证当月数量/利润不漏）
-      const noTime = filled.filter((x) => !x.useTime && !recordedCodes.has(x.code));
-      const toRecord = [...inMonth, ...noTime.map((x) => ({ ...x, useTime: date + ' ' + time }))];
-      if (toRecord.length > 0) {
+      if (inMonth.length > 0) {
         const byDay = new Map<string, { code: string; cinema: 'jinyi' | 'jiahe'; useTime: string }[]>();
-        toRecord.forEach((x) => {
+        inMonth.forEach((x) => {
           const d = x.useTime.substring(0, 10);
           const g = byDay.get(d) || [];
           g.push({ code: x.code, cinema: x.cinema, useTime: x.useTime });
@@ -230,26 +265,41 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
           const t2 = list[0].useTime.length >= 16 ? list[0].useTime.substring(11, 16) : time;
           usedProfit += addRedemptionGroup(list, d, t2);
         });
-        extraUsed += toRecord.length;
+        extraUsed += inMonth.length;
+      }
+      // 查不到核销时间的 → 进待核对（不算进任何一天）
+      const noTime = filled.filter((x) => !x.useTime && !recordedCodes.has(x.code));
+      if (noTime.length > 0) {
+        noTime.forEach((x) => {
+          pendingItems.push({ code: x.code, cinema: x.cinema, name: x.name });
+          recordedCodes.add(x.code);
+        });
+        pendingCount += noTime.length;
       }
     }
   } catch (e) {
     console.error('supplement sync failed:', e);
   }
 
-  // ===== 4. 写新快照（去重，覆盖） =====
+  // ===== 4. 待核对列表保存 =====
+  if (pendingItems.length > 0) {
+    addPendingVouchers(pendingItems);
+  }
+
+  // ===== 5. 写新快照（去重，覆盖） =====
   await (window as any).electronAPI?.saveVoucherSnapshot?.(current);
 
-  // ===== 5. 返回结果 =====
+  // ===== 6. 返回结果 =====
   const total = current.length;
   const usedTotal = usedList.length + extraUsed;
   let msg: string;
-  if (usedTotal === 0 && addedList.length === 0) {
+  const parts: string[] = [];
+  if (addedList.length > 0) parts.push(`新增 ${addedList.length} 张`);
+  if (usedTotal > 0) parts.push(`已使用 ${usedTotal} 张，自动记账 +¥${usedProfit.toFixed(0)}`);
+  if (pendingCount > 0) parts.push(`${pendingCount} 张查不到核销时间，已放待核对`);
+  if (parts.length === 0) {
     msg = `券码快照已同步：共 ${total} 张，无变化`;
   } else {
-    const parts: string[] = [];
-    if (addedList.length > 0) parts.push(`新增 ${addedList.length} 张`);
-    if (usedTotal > 0) parts.push(`已使用 ${usedTotal} 张，自动记账 +¥${usedProfit.toFixed(0)}`);
     msg = `券码快照同步：共 ${total} 张（${parts.join('，')}）`;
   }
   return { total, added: addedList.length, used: usedTotal, usedProfit, msg };
