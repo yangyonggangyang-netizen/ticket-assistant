@@ -296,7 +296,7 @@ export default function VoucherExport() {
               预览
             </button>
           </div>
-          <p className="text-[11px] text-green-500">若打开是旧内容，请点预览刷新或稍等 1-2 分钟。</p>
+          <p className="text-[11px] text-green-500">链接已即时生效，复制发送给客户即可；客户打开后需出示手机号核销。</p>
         </div>
       )}
 

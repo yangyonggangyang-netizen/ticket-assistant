@@ -525,57 +525,43 @@ app.whenReady().then(() => {
     }
   });
 
-  // ===== 兑换券链接部署（GitHub Pages） =====
-  // 上传 HTML 到 gh-pages 分支，返回公网链接
-  // 固定链接：https://yangyonggangyang-netizen.github.io/ticket-assistant/voucher.html
-  // token 从多个位置读取（userData 优先，兼容已安装用户/开发模式），不入库防泄露
-  let GH_TOKEN = '';
-  const tokenCandidates = [
-    // 1. 用户数据目录（可写，随用户持久）
-    path.join(app.getPath('userData'), 'gh_token.json'),
-    // 2. asar 内的配置文件（打包时附带，兜底）
-    path.join(__dirname, 'gh_token.json'),
-  ];
-  for (const tokenFile of tokenCandidates) {
-    try {
-      if (fs.existsSync(tokenFile)) {
-        const t = JSON.parse(fs.readFileSync(tokenFile, 'utf-8')).token || '';
-        if (t) {
-          GH_TOKEN = t;
-          break;
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load GH token from', tokenFile, e.message);
+  // ===== 兑换券链接部署（自有服务器 8.134.105.236） =====
+  // 上传 HTML 到服务器 /var/www/voucher，Nginx 直接服务，秒级生效
+  // 配置优先级：userData/server_config.json > 代码内置默认（兼容已安装用户）
+  let VOUCHER_SERVER = 'http://8.134.105.236';
+  let VOUCHER_API_KEY = 'bc777d634b98d5b472b8db34dc9e29c59d5a72565102b44b';
+  try {
+    const cfgFile = path.join(app.getPath('userData'), 'server_config.json');
+    if (fs.existsSync(cfgFile)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf-8'));
+      if (cfg.serverUrl) VOUCHER_SERVER = String(cfg.serverUrl).replace(/\/+$/, '');
+      if (cfg.apiKey) VOUCHER_API_KEY = String(cfg.apiKey);
     }
+  } catch (e) {
+    console.error('Failed to load server config:', e.message);
   }
-  const GH_REPO = 'yangyonggangyang-netizen/ticket-assistant';
-  const GH_BRANCH = 'gh-pages';
-  const GH_BASE_URL = 'https://yangyonggangyang-netizen.github.io/ticket-assistant';
 
-  async function ghApi(path, method = 'GET', payload = null) {
-    const url = `https://api.github.com/repos/${GH_REPO}${path}`;
+  async function voucherApi(path, method = 'GET', payload = null) {
+    const url = `${VOUCHER_SERVER}${path}`;
     const headers = {
-      Authorization: `token ${GH_TOKEN}`,
-      'User-Agent': 'ticket-assistant',
-      Accept: 'application/vnd.github.v3+json',
+      'X-API-Key': VOUCHER_API_KEY,
+      'Content-Type': 'application/json',
     };
     const opts = { method, headers };
     if (payload) {
       opts.body = JSON.stringify(payload);
-      headers['Content-Type'] = 'application/json';
     }
     const resp = await fetch(url, opts);
     const text = await resp.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (e) {}
     if (!resp.ok) {
-      throw new Error(`GitHub API ${resp.status}: ${(data && (data.message || JSON.stringify(data))) || text}`);
+      throw new Error(`服务器 ${resp.status}: ${(data && (data.error || data.message)) || text}`);
     }
     return data;
   }
 
-  // 部署：每个订单独立文件名 voucher-{id}.html，不覆盖旧页面
+  // 部署：每个订单独立文件名 voucher-{id}.html，不覆盖旧页面，秒级生效
   ipcMain.handle('voucher:deployPage', async (event, { html, fileId }) => {
     try {
       if (!html || typeof html !== 'string') {
@@ -585,25 +571,8 @@ app.whenReady().then(() => {
       if (!safeId) {
         return { success: false, error: '缺少订单标识' };
       }
-      const fileName = `voucher-${safeId}.html`;
-      // 1. 检查文件是否存在（拿 sha，存在则覆盖）
-      let sha = null;
-      try {
-        const meta = await ghApi(`/contents/${fileName}?ref=${GH_BRANCH}`);
-        sha = meta && meta.sha;
-      } catch (e) {
-        // 文件不存在则新建
-      }
-      // 2. 写入文件
-      const base64 = Buffer.from(html, 'utf-8').toString('base64');
-      const payload = {
-        message: `deploy voucher ${safeId} ${new Date().toLocaleString('zh-CN')}`,
-        content: base64,
-        branch: GH_BRANCH,
-      };
-      if (sha) payload.sha = sha;
-      await ghApi(`/contents/${fileName}`, 'PUT', payload);
-      return { success: true, url: `${GH_BASE_URL}/${fileName}` };
+      const data = await voucherApi('/api/voucher', 'POST', { id: safeId, html });
+      return { success: true, url: `${VOUCHER_SERVER}${data.url}` };
     } catch (e) {
       return { success: false, error: e.message || String(e) };
     }
@@ -616,22 +585,7 @@ app.whenReady().then(() => {
       if (!safeId) {
         return { success: false, error: '缺少订单标识' };
       }
-      const fileName = `voucher-${safeId}.html`;
-      let sha = null;
-      try {
-        const meta = await ghApi(`/contents/${fileName}?ref=${GH_BRANCH}`);
-        sha = meta && meta.sha;
-      } catch (e) {
-        // 文件不存在视为已删除
-        return { success: true, deleted: false };
-      }
-      if (sha) {
-        await ghApi(`/contents/${fileName}`, 'DELETE', {
-          message: `revoke voucher ${safeId} ${new Date().toLocaleString('zh-CN')}`,
-          sha,
-          branch: GH_BRANCH,
-        });
-      }
+      await voucherApi(`/api/voucher/${safeId}`, 'DELETE');
       return { success: true, deleted: true };
     } catch (e) {
       return { success: false, error: e.message || String(e) };
