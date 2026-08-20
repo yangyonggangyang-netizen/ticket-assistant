@@ -7,6 +7,7 @@ import { loadRules, saveRules, PriceRule, loadBatches, saveBatches, loadOrders a
 import { loadRedemptions, saveRedemptions, addRedemption, deleteRedemption, genCodes, RedemptionRecord } from '../store/redemptionStore';
 import BatchManager from './BatchManager';
 import GoodsVoucherQuery from './GoodsVoucherQuery';
+import { syncVoucherSnapshot } from '../utils/voucherSnapshot';
 
 // 卖价统一使用「价格规则」（按日期多版本），不再有独立的固定卖价
 function isJiahe(order: any): boolean {
@@ -422,19 +423,42 @@ export default function Ledger() {
           if (page > 20) break;
         }
       }
+      // 合并缓存中的历史订单（历史固定显示，刷新只更新当月）
+      let cachedOld: any[] = [];
+      try {
+        const raw = localStorage.getItem('ledger_orders_cache');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed?.orders)) {
+            cachedOld = parsed.orders.filter((o: any) => !orderDate(o).startsWith(prefix));
+          }
+        }
+      } catch {}
+      const merged = [...cachedOld, ...all];
       // 按时间倒序排序（新的在前）
-      all.sort((a, b) => {
+      merged.sort((a, b) => {
         const ta = Number(a.create_time ?? a.createTime ?? 0);
         const tb = Number(b.create_time ?? b.createTime ?? 0);
         return tb - ta;
       });
-      setOrders(all);
-      // 缓存到 localStorage（刷新/切换页面后仍保留，下次进入先用缓存显示）
+      setOrders(merged);
+      // 缓存到 localStorage（历史 + 当月合并保存）
       try {
-        localStorage.setItem('ledger_orders_cache', JSON.stringify({ savedAt: Date.now(), orders: all }));
+        localStorage.setItem('ledger_orders_cache', JSON.stringify({ savedAt: Date.now(), orders: merged }));
       } catch {}
-      if (!hasError && all.length > 0) {
+      if (!hasError && merged.length > 0) {
         setError('');
+      }
+      // 刷新后联动核销码快照同步（检测已使用 → 自动记账，按实际核销时间归属）
+      try {
+        const r = await syncVoucherSnapshot(accounts);
+        setRedemptions(loadRedemptions());
+        if (r.used > 0 || r.added > 0) {
+          setPriceMsg(r.msg);
+          setTimeout(() => setPriceMsg(''), 5000);
+        }
+      } catch (e) {
+        console.error('snapshot sync failed:', e);
       }
     } catch (e: any) {
       setError('加载失败：' + e.message);
@@ -646,6 +670,15 @@ export default function Ledger() {
     return orders.filter((o) => orderDate(o) === selectedDay && (isMovieOrder(o) || isRechargeOrder(o) || parseSnackOrder(o).count > 0));
   }, [orders, selectedDay]);
 
+  const prevMonth = () => {
+    setViewDate(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }));
+    setSelectedDay('');
+  };
+  const nextMonth = () => {
+    setViewDate(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }));
+    setSelectedDay('');
+  };
+
   if (!account && accounts.length === 0) {
     return <div className="p-6 text-center text-gray-400 py-12">请先添加账号</div>;
   }
@@ -786,14 +819,20 @@ export default function Ledger() {
         </div>
       </div>
 
-      {/* 日历（只显示当月） */}
+      {/* 日历（当月 + 可翻看历史月份） */}
       <div className="bg-white rounded-lg border">
         <div className="flex items-center justify-between p-4 border-b flex-wrap gap-2">
-          <div className="flex items-center gap-2">
-            <span className="px-3 py-1.5 text-base font-bold">
+          <div className="flex items-center gap-1.5">
+            <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-gray-100" title="上个月">
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <span className="px-2 py-1.5 text-base font-bold">
               {viewDate.y} 年 {viewDate.m + 1} 月
             </span>
-            <span className="text-xs text-gray-400">（仅当月数据）</span>
+            <button onClick={nextMonth} className="p-2 rounded-lg hover:bg-gray-100" title="下个月">
+              <ChevronRight className="w-5 h-5" />
+            </button>
+            <span className="text-[11px] text-gray-400">（历史月份固定显示，刷新只更新当月）</span>
           </div>
           <button
             onClick={() => setRedeemOpen(true)}
@@ -1025,6 +1064,31 @@ export default function Ledger() {
                     </div>
                   ))}
                 </div>
+              </div>
+            );
+          })()}
+          {/* 当日利润构成（怎么算出来的一目了然） */}
+          {(() => {
+            const s = daily.get(selectedDay);
+            if (!s || (s.tickets === 0 && s.redeemCount === 0)) return null;
+            const movieProfit = s.profit - s.redeemIncome;
+            return (
+              <div className="mt-3 pt-3 border-t bg-gray-50 rounded-lg p-3 text-xs space-y-1">
+                <p className="font-medium text-gray-700">💡 当日利润构成</p>
+                {s.tickets > 0 && (
+                  <p className="text-gray-600">
+                    电影票：{s.tickets} 张 · 卖价收入 ¥{(s.cost + movieProfit).toFixed(0)}
+                    {' − '}实付成本 ¥{s.cost.toFixed(0)} = <b className={movieProfit >= 0 ? 'text-green-600' : 'text-red-600'}>¥{movieProfit.toFixed(0)}</b>
+                  </p>
+                )}
+                {s.redeemCount > 0 && (
+                  <p className="text-gray-600">
+                    核销码：{s.redeemCount} 张 · 收入 ¥{s.redeemIncome.toFixed(0)}（成本 0）= <b className="text-purple-600">+¥{s.redeemIncome.toFixed(0)}</b>
+                  </p>
+                )}
+                <p className="font-bold text-gray-800">
+                  当日总利润：{s.profit >= 0 ? '+' : ''}¥{s.profit.toFixed(0)}
+                </p>
               </div>
             );
           })()}

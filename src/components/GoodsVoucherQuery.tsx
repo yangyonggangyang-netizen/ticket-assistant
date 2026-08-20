@@ -139,7 +139,59 @@ export default function GoodsVoucherQuery() {
     });
   };
 
-  // 刷新：重新拉最近 30 天并缓存
+  // 拉取所有账号全部卖品订单（翻页全量，不限制时间）
+  const fetchAll = async (): Promise<SnackVoucher[]> => {
+    const out: SnackVoucher[] = [];
+    for (const acc of accounts) {
+      if (!acc.token || !acc.memberId) continue;
+      try {
+        for (let page = 1; page <= 20; page++) {
+          const resp = await api.getOrderListAs(acc.token, acc.memberId, page, 200);
+          if (!resp.success || !resp.result) break;
+          const data = resp.result as any;
+          const list: any[] = Array.isArray(data) ? data : data.records || [];
+          if (list.length === 0) break;
+          for (const o of list) {
+            const v = parseSnackVoucher(o, acc.name);
+            if (v) out.push(v);
+          }
+          const total = Number(data.total) || 0;
+          if (out.length >= total || list.length < 200) break;
+        }
+      } catch (e) {
+        console.error('fetch all snack orders failed:', acc.name, e);
+      }
+    }
+    const seen = new Set<string>();
+    return out.filter((v) => {
+      const k = `${v.account}-${v.code}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+
+  // 刷新全部账号（全量）
+  const refreshAll = async () => {
+    if (loading) return;
+    setLoading(true);
+    setError('');
+    setSnapMsg('');
+    try {
+      const list = await fetchAll();
+      setVouchers(list);
+      const now = new Date().toLocaleString('zh-CN');
+      setSavedAt(now);
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ list, savedAt: now }));
+      setSnapMsg(`✅ 已刷新全部账号：共 ${list.length} 张卖品券（${list.filter((v) => !v.taken).length} 张未取货）`);
+    } catch (e: any) {
+      setError('刷新失败：' + (e.message || String(e)));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 刷新全部账号（最近30天）
   const refresh = async () => {
     if (loading) return;
     setLoading(true);
@@ -306,6 +358,14 @@ export default function GoodsVoucherQuery() {
           >
             <FolderOpen className="w-3.5 h-3.5" />
             截图文件夹
+          </button>
+          <button
+            onClick={refreshAll}
+            disabled={loading}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-gray-600 hover:bg-gray-700 text-white rounded-lg disabled:opacity-50"
+          >
+            {loading ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            刷新全部账号
           </button>
           <button
             onClick={refresh}
