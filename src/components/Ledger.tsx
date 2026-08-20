@@ -193,6 +193,11 @@ export default function Ledger() {
         }
         localStorage.setItem('ledger_redemption_repaired', '1');
       }
+      // 待核对机制已废弃（v1.0.57 按快照对比记刷新当天），清空残留
+      if (localStorage.getItem('voucher_pending')) {
+        localStorage.removeItem('voucher_pending');
+        setPendingVouchers([]);
+      }
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
