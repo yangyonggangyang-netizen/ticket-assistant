@@ -13,6 +13,7 @@ export interface RedemptionRecord {
   income: number;        // 收入 = unitPrice × count
   batchId: string;       // 关联批次（可选）
   profit: number;        // 利润 = income（成本默认 0）
+  useTime?: string;      // 核销码实际使用时间（快照同步时从接口查得）
 }
 
 const KEY = 'voucher_redemptions';

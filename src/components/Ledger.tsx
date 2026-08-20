@@ -22,7 +22,13 @@ function loadPrices(): LedgerPrices {
       return { jinyi: Number(p.jinyi) || 30, jiahe: Number(p.jiahe) || 25 };
     }
   } catch {}
-  return { jinyi: 30, jiahe: 25 };
+  // 无存储时跟随价格规则（金逸33/嘉和30），避免两套价格不一致
+  try {
+    const rule = getRuleForDate(loadRules(), new Date().toISOString().substring(0, 10));
+    return { jinyi: rule.jinyiSell || 33, jiahe: rule.jiaheSell || 30 };
+  } catch {
+    return { jinyi: 33, jiahe: 30 };
+  }
 }
 function isJiahe(order: any): boolean {
   const name = String(order.cinema_name || order.cinemaName || '');
@@ -1034,6 +1040,7 @@ export default function Ledger() {
                         </span>
                         <span className="text-purple-600 font-bold shrink-0">+¥{r.profit.toFixed(0)}</span>
                       </div>
+                      {r.useTime && <p className="text-gray-400 mt-0.5">实际核销时间：{r.useTime}</p>}
                       {r.batchId && <p className="text-gray-400 mt-0.5">批次：{r.batchId}</p>}
                       <p className="text-gray-400 font-mono mt-0.5 break-all">{r.codes.join('、')}</p>
                     </div>

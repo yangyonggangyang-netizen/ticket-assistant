@@ -270,7 +270,7 @@ export default function Accounts() {
     const newCodes = new Set(current.map((x) => x.code));
     const usedList = oldList.filter((x) => !newCodes.has(x.code));
     const addedList = current.filter((x) => !oldCodes.has(x.code));
-    // 4. 已使用 → 自动记账（核销码收入进账本，按影院价）
+    // 4. 已使用 → 自动记账（核销码收入进账本，按影院价；并查实际使用时间）
     let usedProfit = 0;
     if (usedList.length > 0) {
       const today = new Date();
@@ -278,25 +278,54 @@ export default function Accounts() {
       const date = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
       const time = `${pad(today.getHours())}:${pad(today.getMinutes())}`;
       const rule = getRuleForDate(loadRules(), date);
-      const groups = new Map<'jinyi' | 'jiahe', SnapItem[]>();
-      usedList.forEach((x) => {
-        const g = groups.get(x.cinema) || [];
+      // 查券使用时间（并发限 3）：useTime/usedTime/use_time/verifyTime/updateTime
+      const fetchUseTime = async (code: string): Promise<string> => {
+        try {
+          const resp = await api.getVoucherUseByNo(code);
+          if (resp.success && resp.result) {
+            const r = resp.result as any;
+            const t = r.useTime ?? r.usedTime ?? r.use_time ?? r.verifyTime ?? r.updateTime ?? r.update_time ?? '';
+            if (t) return String(t).substring(0, 19);
+          }
+        } catch (e) {
+          console.error('useTime failed:', code, e);
+        }
+        return '';
+      };
+      const usedWithTime = await (async () => {
+        const out: { item: SnapItem; useTime: string }[] = [];
+        let idx = 0;
+        const workers = Array.from({ length: Math.min(3, usedList.length) }, async () => {
+          while (idx < usedList.length) {
+            const item = usedList[idx++];
+            const ut = await fetchUseTime(item.code);
+            out.push({ item, useTime: ut });
+          }
+        });
+        await Promise.all(workers);
+        return out;
+      })();
+      const groups = new Map<'jinyi' | 'jiahe', { item: SnapItem; useTime: string }[]>();
+      usedWithTime.forEach((x) => {
+        const g = groups.get(x.item.cinema) || [];
         g.push(x);
-        groups.set(x.cinema, g);
+        groups.set(x.item.cinema, g);
       });
       groups.forEach((list, cinema) => {
         const price = cinema === 'jiahe' ? rule.jiaheCode : rule.jinyiCode;
+        const firstTime = list.map((x) => x.useTime).find(Boolean) || '';
         const rec: RedemptionRecord = {
           id: 'RD' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
           date,
           time,
           cinema,
           count: list.length,
-          codes: list.map((x) => x.code),
+          codes: list.map((x) => x.item.code),
           unitPrice: price,
           income: price * list.length,
           batchId: '',
           profit: price * list.length,
+          useTime: firstTime || undefined,
         };
         addRedemption(rec);
         usedProfit += rec.profit;
