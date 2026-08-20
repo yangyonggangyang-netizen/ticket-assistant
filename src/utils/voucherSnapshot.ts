@@ -38,13 +38,25 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<T
   return results;
 }
 
-// 查单张券详情（取使用时间等字段）
-async function fetchVoucherDetail(code: string): Promise<any> {
+// 查单张券详情（指定账号 token 查，避免用错账号导致查不到）
+async function fetchVoucherDetail(code: string, token?: string): Promise<any> {
   try {
-    const resp = await api.getVoucherUseByNo(code);
+    const resp = token
+      ? await api.getVoucherUseByNoAs(token, code)
+      : await api.getVoucherUseByNo(code);
     if (resp.success && resp.result) return resp.result as any;
   } catch (e) {
     console.error('voucher detail failed:', code, e);
+  }
+  return null;
+}
+
+// 用所有账号 token 依次尝试（旧快照的券不知道归属账号）
+async function fetchVoucherDetailMulti(code: string, accounts: any[]): Promise<any> {
+  for (const acc of accounts) {
+    if (!acc.token) continue;
+    const r = await fetchVoucherDetail(code, acc.token);
+    if (r) return r;
   }
   return null;
 }
@@ -58,8 +70,17 @@ function pickUseTime(r: any): string {
     r?.use_time ??
     r?.used_time ??
     r?.useTimeStr ??
+    r?.useDate ??
+    r?.usedDate ??
+    r?.use_date ??
+    r?.used_date ??
     r?.verifyTime ??
     r?.verify_time ??
+    r?.verifyDate ??
+    r?.checkTime ??
+    r?.check_time ??
+    r?.usedAt ??
+    r?.consumedTime ??
     r?.completeTime ??
     r?.finishTime ??
     r?.updateTime ??
@@ -169,12 +190,12 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
   };
 
   if (usedList.length > 0) {
-    // 查使用时间（并发 3）
+    // 查使用时间（并发 3，用所有账号 token 依次尝试——旧快照券不知归属账号）
     const usedWithTime = await mapLimit(
       usedList.map((x) => ({ ...x, useTime: '' })),
       3,
       async (item) => {
-        const detail = await fetchVoucherDetail(item.code);
+        const detail = await fetchVoucherDetailMulti(item.code, accounts);
         return { ...item, useTime: pickUseTime(detail) };
       }
     );
@@ -208,7 +229,7 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
   // ===== 3. 补充同步：直接拉已使用券（state=2），当月未记账的补记 =====
   let extraUsed = 0;
   try {
-    const monthUsed: { code: string; cinema: 'jinyi' | 'jiahe'; name: string; useTime: string }[] = [];
+    const monthUsed: { code: string; cinema: 'jinyi' | 'jiahe'; name: string; useTime: string; token: string }[] = [];
     for (const acc of accounts) {
       if (!acc.token || !acc.memberId) continue;
       try {
@@ -222,12 +243,13 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
             if (!isMovieVoucher(v)) continue;
             const code = String(v.voucher_no || v.voucherNo || '').trim();
             if (!code || recordedCodes.has(code)) continue; // 已记账跳过
-            const t = String(v.useTime ?? v.usedTime ?? v.use_time ?? v.updateTime ?? '');
+            const t = String(v.useTime ?? v.usedTime ?? v.use_time ?? v.useDate ?? v.usedDate ?? v.updateTime ?? '');
             monthUsed.push({
               code,
               cinema: cinemaOf(v),
               name: String(v.voucher_name || v.voucherName || v.name || ''),
               useTime: t ? t.substring(0, 19) : '',
+              token: acc.token, // 记录归属账号，查详情用对 token
             });
           }
           if (list.length < 200) break;
@@ -244,10 +266,10 @@ export async function syncVoucherSnapshot(accounts: any[]): Promise<SnapResult> 
         dedup.add(x.code);
         return true;
       });
-      // 缺时间的查详情（并发 5）
+      // 缺时间的查详情（并发 5，用券归属账号的 token）
       const filled = await mapLimit(uniq, 5, async (item) => {
         if (item.useTime) return item;
-        const detail = await fetchVoucherDetail(item.code);
+        const detail = await fetchVoucherDetail(item.code, item.token);
         const t = pickUseTime(detail);
         return t ? { ...item, useTime: t } : item;
       });

@@ -351,6 +351,10 @@ export const api = {
   getVoucherUseByNo: (voucherNo: string) =>
     get('/api/activity/getVoucherUseByNo', { voucherNo }),
 
+  // 指定账号查券详情（跨账号核销时间查询用）
+  getVoucherUseByNoAs: (token: string, voucherNo: string) =>
+    requestAs(token, '', 'GET', '/api/activity/getVoucherUseByNo', { voucherNo }),
+
   getVoucherList: (orderId: string, payType: string = '') =>
     get('/api/activity/getVoucherList', { orderId, payType }),
 
