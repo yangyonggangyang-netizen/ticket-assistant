@@ -314,10 +314,13 @@ export default function Accounts() {
       groups.forEach((list, cinema) => {
         const price = cinema === 'jiahe' ? rule.jiaheCode : rule.jinyiCode;
         const firstTime = list.map((x) => x.useTime).find(Boolean) || '';
+        // 记账日期用实际核销时间（查得到按实际归属，查不到用当天）
+        const useDate = firstTime ? firstTime.substring(0, 10) : date;
+        const useClock = firstTime && firstTime.length >= 16 ? firstTime.substring(11, 16) : time;
         const rec: RedemptionRecord = {
           id: 'RD' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-          date,
-          time,
+          date: useDate,
+          time: useClock,
           cinema,
           count: list.length,
           codes: list.map((x) => x.item.code),

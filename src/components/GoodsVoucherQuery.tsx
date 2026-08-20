@@ -313,7 +313,7 @@ export default function GoodsVoucherQuery() {
             className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-pink-500 hover:bg-pink-600 text-white rounded-lg disabled:opacity-50"
           >
             {loading ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-            刷新（最近30天）
+            刷新全部账号（最近30天）
           </button>
         </div>
       </div>

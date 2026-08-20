@@ -8,28 +8,7 @@ import { loadRedemptions, saveRedemptions, addRedemption, deleteRedemption, genC
 import BatchManager from './BatchManager';
 import GoodsVoucherQuery from './GoodsVoucherQuery';
 
-// 固定卖价配置（localStorage 持久化，可编辑）
-const PRICES_KEY = 'ledger_prices';
-interface LedgerPrices {
-  jinyi: number; // 金逸巨幕影城 卖价
-  jiahe: number; // 嘉和影城 卖价
-}
-function loadPrices(): LedgerPrices {
-  try {
-    const raw = localStorage.getItem(PRICES_KEY);
-    if (raw) {
-      const p = JSON.parse(raw);
-      return { jinyi: Number(p.jinyi) || 30, jiahe: Number(p.jiahe) || 25 };
-    }
-  } catch {}
-  // 无存储时跟随价格规则（金逸33/嘉和30），避免两套价格不一致
-  try {
-    const rule = getRuleForDate(loadRules(), new Date().toISOString().substring(0, 10));
-    return { jinyi: rule.jinyiSell || 33, jiahe: rule.jiaheSell || 30 };
-  } catch {
-    return { jinyi: 33, jiahe: 30 };
-  }
-}
+// 卖价统一使用「价格规则」（按日期多版本），不再有独立的固定卖价
 function isJiahe(order: any): boolean {
   const name = String(order.cinema_name || order.cinemaName || '');
   return name.includes('嘉和');
@@ -192,13 +171,10 @@ export default function Ledger() {
     return { y: d.getFullYear(), m: d.getMonth() }; // m: 0-11
   });
   const [selectedDay, setSelectedDay] = useState<string>('');
-  const [prices, setPrices] = useState<LedgerPrices>(loadPrices);
-  const [priceEdit, setPriceEdit] = useState<LedgerPrices>(loadPrices);
   const [showPriceEdit, setShowPriceEdit] = useState(false);
   const [priceMsg, setPriceMsg] = useState('');
   // 视图切换：calendar=记账日历 / batches=活动批次 / goods=卖品券码
   const [view, setView] = useState<'calendar' | 'batches' | 'goods'>('calendar');
-  // 价格规则（按日期多版本）
   const [priceRules, setPriceRules] = useState<PriceRule[]>(loadRules);
   const [newRule, setNewRule] = useState<{ from: string; to: string; jinyiCost: number; jinyiSell: number; jinyiCode: number; jiaheCost: number; jiaheSell: number; jiaheCode: number; note: string }>({
     from: '', to: '', jinyiCost: 35, jinyiSell: 33, jinyiCode: 30, jiaheCost: 30, jiaheSell: 30, jiaheCode: 28, note: '',
@@ -400,19 +376,7 @@ export default function Ledger() {
     }
   };
 
-  const savePrices = () => {
-    const p = {
-      jinyi: Number(priceEdit.jinyi) || 0,
-      jiahe: Number(priceEdit.jiahe) || 0,
-    };
-    localStorage.setItem(PRICES_KEY, JSON.stringify(p));
-    setPrices(p);
-    setShowPriceEdit(false);
-    setPriceMsg('✅ 卖价已保存');
-    setTimeout(() => setPriceMsg(''), 2000);
-  };
-
-  // 手动刷新：拉取所有已登录账号的【全部】订单（分页拉完，不遗漏深层订单；成功后缓存）
+  // 手动刷新：拉取所有已登录账号的【当月】订单（分页拉完，成功后缓存）
   const loadOrders = async () => {
     const targetAccounts = accounts.filter((a) => a.token && a.memberId);
     if (targetAccounts.length === 0) {
@@ -424,10 +388,13 @@ export default function Ledger() {
     try {
       let all: any[] = [];
       let hasError = false;
+      // 当月前缀（老板要求：记账从当月开始，刷新只刷新当月）
+      const prefix = `${viewDate.y}-${String(viewDate.m + 1).padStart(2, '0')}`;
       // 每个账号循环拉所有页，直到拉完 total 或返回空
       for (const acc of targetAccounts) {
         let page = 1;
         const pageSize = 100;
+        let stalePages = 0; // 连续几页没有当月订单（说明后面的更早，提前停）
         for (;;) {
           const resp = await api.getOrderListAs(acc.token, acc.memberId, page, pageSize);
           if (!resp.success) {
@@ -438,12 +405,21 @@ export default function Ledger() {
           const data = resp.result as any;
           const list = Array.isArray(data) ? data : data?.records || [];
           if (list.length === 0) break;
-          all = all.concat(list);
+          // 只保留当月订单
+          const monthOrders = list.filter((o: any) => orderDate(o).startsWith(prefix));
+          all = all.concat(monthOrders);
+          const oldCount = list.length - monthOrders.length;
+          if (oldCount >= list.length) {
+            stalePages += 1;
+            if (stalePages >= 2) break; // 连续两页都是旧订单，后面的更早，停止
+          } else {
+            stalePages = 0;
+          }
           const total = Number(data?.total ?? 0);
-          if (total > 0 && all.length >= total) break;
+          if (total > 0 && page * pageSize >= total) break;
           page += 1;
-          // 防止死循环，最多拉 200 页
-          if (page > 200) break;
+          // 防止死循环，最多拉 20 页
+          if (page > 20) break;
         }
       }
       // 按时间倒序排序（新的在前）
@@ -551,7 +527,9 @@ export default function Ledger() {
       const cur = map.get(d) || empty();
       const n = orderTickets(o);
       const amount = orderAmount(o);
-      const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi; // 卖价按影院
+      // 卖价统一用价格规则（按订单日期取生效规则）
+      const rule = getRuleForDate(loadRules(), d);
+      const unitPrice = isJiahe(o) ? rule.jiaheSell : rule.jinyiSell;
       const saleIncome = unitPrice * n; // 卖票收入（客户付的钱）
       cur.tickets += n;
       cur.income += amount; // 收入 = 实付总和
@@ -580,7 +558,7 @@ export default function Ledger() {
       if (ov.profit != null) cur.profit = ov.profit;
     });
     return map;
-  }, [orders, prices, overrides, redemptions]);
+  }, [orders, overrides, redemptions]);
 
   // 当月天数网格
   const days = useMemo(() => {
@@ -692,12 +670,12 @@ export default function Ledger() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => { setPriceEdit(prices); setShowPriceEdit(true); }}
+            onClick={() => { setShowPriceEdit(true); }}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-500 text-white rounded-lg hover:bg-purple-600"
-            title="设置金逸/嘉和的固定卖价"
+            title="配置金逸/嘉和的售价与成本（利润统计使用此价格）"
           >
             <Settings2 className="w-4 h-4" />
-            固定卖价：金逸¥{prices.jinyi} / 嘉和¥{prices.jiahe}
+            价格规则：金逸¥{(getRuleForDate(priceRules, todayStr)).jinyiSell} / 嘉和¥{(getRuleForDate(priceRules, todayStr)).jiaheSell}
           </button>
           <button
             onClick={loadOrders}
@@ -970,7 +948,8 @@ export default function Ledger() {
                   }
                 })();
                 const n = orderTickets(o);
-                const unitPrice = isJiahe(o) ? prices.jiahe : prices.jinyi;
+                const rule2 = getRuleForDate(loadRules(), orderDate(o));
+                const unitPrice = isJiahe(o) ? rule2.jiaheSell : rule2.jinyiSell;
                 const saleIncome = unitPrice * n; // 卖票收入
                 const cost = orderAmount(o); // 实际支付成本
                 const profit = saleIncome - cost; // 每单利润
