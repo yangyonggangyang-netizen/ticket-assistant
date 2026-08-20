@@ -1,9 +1,11 @@
-import { useMemo, useState } from 'react';
-import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check, RefreshCw, BookMarked, Search, ArrowUpDown, ArrowUp, ArrowDown, ListChecks, Wallet, Star, Ticket } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Plus, Trash2, Wifi, CheckCircle, XCircle, Loader, Edit2, Save, X, ExternalLink, Smartphone, Copy, KeyRound, Check, RefreshCw, BookMarked, Search, ArrowUpDown, ArrowUp, ArrowDown, ListChecks, Wallet, Star, Ticket, FileText, BadgeCheck } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api, localApi } from '../api/client';
 import type { Account } from '../types';
 import VoucherExport from './VoucherExport';
+import { loadRules, getRuleForDate } from '../store/batchStore';
+import { addRedemption, RedemptionRecord } from '../store/redemptionStore';
 
 const WECHAT_APP_ID = 'wx4fd7f63cb29a8891';
 const launchApplet = (path?: string) =>
@@ -43,6 +45,25 @@ export default function Accounts() {
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [sortMode, setSortMode] = useState<'none' | 'asc' | 'desc'>('none');
+  // 券码快照：总数 / 上次对比结果
+  const [snapInfo, setSnapInfo] = useState<{ total: number; added: number; used: number; usedProfit: number; lastSync: string } | null>(null);
+  const [syncingSnap, setSyncingSnap] = useState(false);
+
+  // 进入页面加载快照总数
+  useEffect(() => {
+    (async () => {
+      const resp = await (window as any).electronAPI?.loadVoucherSnapshot?.();
+      if (resp?.success && Array.isArray(resp.list)) {
+        setSnapInfo((prev) => ({
+          total: resp.list.length,
+          added: prev?.added || 0,
+          used: prev?.used || 0,
+          usedProfit: prev?.usedProfit || 0,
+          lastSync: prev?.lastSync || '',
+        }));
+      }
+    })();
+  }, []);
 
   // 过滤 + 排序后的账号列表
   const visibleAccounts = useMemo(() => {
@@ -195,7 +216,119 @@ export default function Accounts() {
     }
     await saveToStorage();
     setClearMsg(`✅ 刷新完成：${okCount}/${targetAccounts.length} 个账号已更新`);
+    // 刷新后自动对比券码快照（少了=已使用→自动记账）
+    try {
+      const snapMsg = await syncVoucherSnapshot();
+      setClearMsg(`✅ 刷新完成：${okCount}/${targetAccounts.length} 个账号已更新\n${snapMsg}`);
+    } catch (e: any) {
+      console.error('snapshot sync failed:', e);
+    }
     setRefreshingAll(false);
+  };
+
+  // ===== 券码快照同步：记录电影票核销券码（txt 去重），对比旧快照 =====
+  // 少了 = 已使用 → 自动记账（核销码收入，金逸30/嘉和28）；多了 = 更新数量
+  const syncVoucherSnapshot = async (): Promise<string> => {
+    // 1. 拉所有账号未使用电影票兑换券（翻页全量）
+    interface SnapItem { code: string; cinema: 'jinyi' | 'jiahe'; name: string }
+    const current: SnapItem[] = [];
+    const seen = new Set<string>();
+    for (const acc of accounts) {
+      if (!acc.token || !acc.memberId) continue;
+      try {
+        for (let page = 1; page <= 10; page++) {
+          const resp = await api.getMemberVouchersAs(acc.token, acc.memberId, 1, page, 200);
+          if (!resp.success || !resp.result) break;
+          const data = resp.result as any;
+          const list: any[] = Array.isArray(data) ? data : data.records || [];
+          if (list.length === 0) break;
+          for (const v of list) {
+            const name = String(v.voucher_name || v.voucherName || v.name || '');
+            if (!(name.includes('电影票兑换券') || name.includes('电影') || name.includes('观影券'))) continue;
+            const code = String(v.voucher_no || v.voucherNo || '').trim();
+            if (!code || seen.has(code)) continue;
+            seen.add(code);
+            const cinemaName = String(v.cinema_name || v.cinemaName || v.cinema || '');
+            current.push({
+              code,
+              cinema: cinemaName.includes('嘉和') ? 'jiahe' : 'jinyi',
+              name,
+            });
+          }
+          const total = Number(data.total) || 0;
+          if (current.length >= total || list.length < 200) break;
+        }
+      } catch (e) {
+        console.error('snapshot fetch failed:', acc.name, e);
+      }
+    }
+    // 2. 读旧快照
+    const oldResp = await (window as any).electronAPI?.loadVoucherSnapshot?.();
+    const oldList: SnapItem[] = (oldResp?.success ? oldResp.list : []) || [];
+    // 3. 对比：少了 = 已使用；多了 = 新增
+    const oldCodes = new Set(oldList.map((x) => x.code));
+    const newCodes = new Set(current.map((x) => x.code));
+    const usedList = oldList.filter((x) => !newCodes.has(x.code));
+    const addedList = current.filter((x) => !oldCodes.has(x.code));
+    // 4. 已使用 → 自动记账（核销码收入进账本，按影院价）
+    let usedProfit = 0;
+    if (usedList.length > 0) {
+      const today = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const date = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+      const time = `${pad(today.getHours())}:${pad(today.getMinutes())}`;
+      const rule = getRuleForDate(loadRules(), date);
+      const groups = new Map<'jinyi' | 'jiahe', SnapItem[]>();
+      usedList.forEach((x) => {
+        const g = groups.get(x.cinema) || [];
+        g.push(x);
+        groups.set(x.cinema, g);
+      });
+      groups.forEach((list, cinema) => {
+        const price = cinema === 'jiahe' ? rule.jiaheCode : rule.jinyiCode;
+        const rec: RedemptionRecord = {
+          id: 'RD' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          date,
+          time,
+          cinema,
+          count: list.length,
+          codes: list.map((x) => x.code),
+          unitPrice: price,
+          income: price * list.length,
+          batchId: '',
+          profit: price * list.length,
+        };
+        addRedemption(rec);
+        usedProfit += rec.profit;
+      });
+    }
+    // 5. 写新快照（去重，覆盖）
+    await (window as any).electronAPI?.saveVoucherSnapshot?.(current);
+    // 6. 更新显示
+    const lastSync = new Date().toLocaleString('zh-CN');
+    setSnapInfo({ total: current.length, added: addedList.length, used: usedList.length, usedProfit, lastSync });
+    if (usedList.length === 0 && addedList.length === 0) {
+      return `券码快照已同步：共 ${current.length} 张，无变化`;
+    }
+        const parts: string[] = [];
+        if (addedList.length > 0) parts.push(`新增 ${addedList.length} 张`);
+        if (usedList.length > 0) parts.push(`已使用 ${usedList.length} 张，自动记账 +¥${usedProfit.toFixed(0)}`);
+        return `券码快照同步：共 ${current.length} 张（${parts.join('，')}）`;
+  };
+
+  // 手动同步券码快照
+  const handleSyncSnapshot = async () => {
+    if (syncingSnap) return;
+    setSyncingSnap(true);
+    setCollectMsg('正在同步券码快照...');
+    try {
+      const msg = await syncVoucherSnapshot();
+      setCollectMsg(msg);
+    } catch (e: any) {
+      setCollectMsg('快照同步失败：' + (e.message || String(e)));
+    } finally {
+      setSyncingSnap(false);
+    }
   };
 
   // 清理缓存 + 强制全量刷新（只刷新显示数据，不动 accounts.json）
@@ -650,11 +783,37 @@ export default function Accounts() {
             <Ticket className="w-3.5 h-3.5" /> 总券码
           </p>
           <p className="text-2xl font-bold text-purple-600 mt-1">
-            {accounts.reduce((s, a) => s + (Number(a.voucherNum) || 0), 0)}
+            {snapInfo ? snapInfo.total : accounts.reduce((s, a) => s + (Number(a.voucherNum) || 0), 0)}
           </p>
           <p className="text-xs text-gray-400 mt-1">
-            {accounts.filter((a) => Number(a.voucherNum) > 0).length} 个账号有券
+            {snapInfo
+              ? `快照 ${snapInfo.total} 张 · ${snapInfo.lastSync.split(' ')[0]} 同步`
+              : `${accounts.filter((a) => Number(a.voucherNum) > 0).length} 个账号有券`}
           </p>
+          <div className="flex gap-1.5 mt-2">
+            <button
+              onClick={handleSyncSnapshot}
+              disabled={syncingSnap}
+              className="flex items-center gap-1 px-2 py-1 text-[11px] bg-purple-500 hover:bg-purple-600 text-white rounded-lg disabled:opacity-50"
+            >
+              {syncingSnap ? <Loader className="w-3 h-3 animate-spin" /> : <BadgeCheck className="w-3 h-3" />}
+              同步快照
+            </button>
+            <button
+              onClick={() => (window as any).electronAPI?.openVoucherSnapshot?.()}
+              title="打开券码快照 txt"
+              className="flex items-center gap-1 px-2 py-1 text-[11px] bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 rounded-lg"
+            >
+              <FileText className="w-3 h-3" />
+              快照文件
+            </button>
+          </div>
+          {snapInfo && (snapInfo.used > 0 || snapInfo.added > 0) && (
+            <p className="text-[11px] mt-1.5 text-gray-500">
+              上次同步：{snapInfo.added > 0 ? `新增 ${snapInfo.added} 张；` : ''}
+              {snapInfo.used > 0 ? `已使用 ${snapInfo.used} 张 → 已自动记账 +¥${snapInfo.usedProfit.toFixed(0)}` : '无使用'}
+            </p>
+          )}
         </div>
       </div>
 

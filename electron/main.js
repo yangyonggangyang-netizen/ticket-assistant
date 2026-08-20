@@ -789,6 +789,62 @@ app.whenReady().then(() => {
     }
   });
 
+  // ===== 电影票核销券码快照（txt 记录，去重；刷新账号时对比：少了=已使用→自动记账） =====
+  const SNAP_FILE = path.join(app.getPath('userData'), '卷码快照.txt');
+  // 读取快照：每行 "券码|影院|券名"
+  ipcMain.handle('voucher:loadSnapshot', async () => {
+    try {
+      if (!fs.existsSync(SNAP_FILE)) return { success: true, list: [] };
+      const raw = fs.readFileSync(SNAP_FILE, 'utf-8');
+      const list = raw
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [code, cinema, name] = line.split('|');
+          return { code: String(code || '').trim(), cinema: String(cinema || 'jinyi').trim(), name: String(name || '').trim() };
+        })
+        .filter((x) => x.code);
+      return { success: true, list };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+  // 写快照（覆盖，去重）
+  ipcMain.handle('voucher:saveSnapshot', async (event, { list }) => {
+    try {
+      const seen = new Set();
+      const lines = [];
+      (Array.isArray(list) ? list : []).forEach((x) => {
+        const code = String(x?.code || '').trim();
+        if (!code || seen.has(code)) return;
+        seen.add(code);
+        const cinema = String(x?.cinema || 'jinyi').trim();
+        const name = String(x?.name || '').trim();
+        lines.push(name ? `${code}|${cinema}|${name}` : `${code}|${cinema}`);
+      });
+      lines.sort();
+      fs.mkdirSync(path.dirname(SNAP_FILE), { recursive: true });
+      fs.writeFileSync(SNAP_FILE, lines.join('\n'), 'utf-8');
+      return { success: true, count: lines.length, file: SNAP_FILE };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+  // 打开快照 txt
+  ipcMain.handle('voucher:openSnapshot', async () => {
+    try {
+      if (!fs.existsSync(SNAP_FILE)) {
+        fs.mkdirSync(path.dirname(SNAP_FILE), { recursive: true });
+        fs.writeFileSync(SNAP_FILE, '', 'utf-8');
+      }
+      const result = await shell.openPath(SNAP_FILE);
+      return { success: !result, error: result || undefined };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
   createWindow();
 
   // 启动后自动检查更新（延时 3 秒，不打扰启动；有新版自动下载，下载完提示一键重启）
