@@ -223,6 +223,9 @@ export default function Ledger() {
   const [bindCoupon, setBindCoupon] = useState(0);
   const [bindMsg, setBindMsg] = useState('');
   const [savingBind, setSavingBind] = useState(false);
+  // 绑定类型：会员购票 / 核销码（核销码按核销码价记收入，成本默认 0=赠券）
+  const [bindType, setBindType] = useState<'member' | 'code'>('member');
+  const [bindCodeCost, setBindCodeCost] = useState(0);
 
   useEffect(() => {
     setBatches(refreshBatchStatuses(loadBatches()));
@@ -238,6 +241,8 @@ export default function Ledger() {
     setBindOrder({ order: o, tickets, cinema });
     setBindBatchId('');
     setBindCoupon(0);
+    setBindType('member');
+    setBindCodeCost(0);
     setBindMsg('');
   };
 
@@ -256,14 +261,19 @@ export default function Ledger() {
       const date = orderDate(order);
       const rule = getRuleForDate(loadRules(), date);
       const isJ = cinema === 'jinyi';
-      // 成本：会员购票成本
-      const costNormal = (isJ ? rule.jinyiCost : rule.jiaheCost) * tickets;
-      // 优惠抵扣：min(票数×上限, 优惠金剩余, 手动填写的金额)
+      const isCode = bindType === 'code';
+      // 成本：核销码默认 0（赠券无成本，可手动填成本/张）；会员票按会员成本
+      const costNormal = isCode
+        ? (Number(bindCodeCost) || 0) * tickets
+        : (isJ ? rule.jinyiCost : rule.jiaheCost) * tickets;
+      // 优惠抵扣：会员票可用优惠金；核销码不走优惠金
       const maxByTicket = tickets * (b.couponPerTicket || 0);
-      const couponUsed = Math.min(Number(bindCoupon) || 0, maxByTicket, b.couponLeft);
+      const couponUsed = isCode ? 0 : Math.min(Number(bindCoupon) || 0, maxByTicket, b.couponLeft);
       const costActual = Math.max(0, costNormal - couponUsed);
-      // 收入：客户售价（核销码类型按核销码价，这里电影票按售价）
-      const income = (isJ ? rule.jinyiSell : rule.jiaheSell) * tickets;
+      // 收入：核销码按核销码售价；会员票按客户售价
+      const income = isCode
+        ? (isJ ? rule.jinyiCode : rule.jiaheCode) * tickets
+        : (isJ ? rule.jinyiSell : rule.jiaheSell) * tickets;
       const profit = income - costActual;
       // 保存批次订单
       const bo = {
@@ -272,7 +282,7 @@ export default function Ledger() {
         batchId: b.id,
         accountId: order.memberId || '',
         cinema,
-        type: 'member' as const,
+        type: (isCode ? 'code' : 'member') as 'member' | 'code',
         tickets,
         sellPrice: income,
         costNormal,
@@ -284,13 +294,17 @@ export default function Ledger() {
         profit,
         priceNote: rule.note || '默认规则',
       };
-      // 扣减批次余额/优惠金
+      // 扣减批次：核销码→扣赠券库存；会员票→扣余额/优惠金/赠券
       const newB = { ...b };
-      newB.balanceLeft = Math.max(0, (newB.balanceLeft || 0) - costActual);
-      if (newB.type === 'coupon') {
-        newB.couponLeft = Math.max(0, (newB.couponLeft || 0) - couponUsed);
-      } else if (newB.type === 'voucher') {
+      if (isCode) {
         newB.giftVouchersLeft = Math.max(0, (newB.giftVouchersLeft || 0) - tickets);
+      } else {
+        newB.balanceLeft = Math.max(0, (newB.balanceLeft || 0) - costActual);
+        if (newB.type === 'coupon') {
+          newB.couponLeft = Math.max(0, (newB.couponLeft || 0) - couponUsed);
+        } else if (newB.type === 'voucher') {
+          newB.giftVouchersLeft = Math.max(0, (newB.giftVouchersLeft || 0) - tickets);
+        }
       }
       saveBatches(all.map((x) => x.id === b.id ? newB : x));
       // 保存订单
@@ -932,6 +946,7 @@ export default function Ledger() {
                       {boundOrder ? (
                         <p className="text-xs mt-0.5 text-purple-600">
                           📦 已绑定批次 {boundOrder.batchId}
+                          {boundOrder.type === 'code' ? ' · 核销码' : ''}
                           {boundOrder.couponUsed > 0 ? ` · 优惠抵¥${boundOrder.couponUsed.toFixed(0)}` : ''}
                           {' · '}利润 ¥{boundOrder.profit.toFixed(0)}
                         </p>
@@ -1043,6 +1058,36 @@ export default function Ledger() {
               <p>订单日期：{orderDate(bindOrder.order)}</p>
             </div>
             <div>
+              <label className="text-xs text-gray-500 block mb-1">订单类型</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBindType('member')}
+                  className={`py-2 text-sm rounded-lg border transition-colors ${
+                    bindType === 'member'
+                      ? 'bg-purple-500 text-white border-purple-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-purple-300'
+                  }`}
+                >
+                  会员购票
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBindType('code')}
+                  className={`py-2 text-sm rounded-lg border transition-colors ${
+                    bindType === 'code'
+                      ? 'bg-purple-500 text-white border-purple-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-purple-300'
+                  }`}
+                >
+                  核销码
+                </button>
+              </div>
+              {bindType === 'code' && (
+                <p className="text-[11px] text-gray-400 mt-1">核销码按核销码价记收入（金逸 30 / 嘉和 28），成本默认 0（赠券），利润全额计入</p>
+              )}
+            </div>
+            <div>
               <label className="text-xs text-gray-500 block mb-1">选择活动批次 *</label>
               <select
                 value={bindBatchId}
@@ -1060,32 +1105,61 @@ export default function Ledger() {
                 <p className="text-[11px] text-amber-600 mt-1">暂无进行中的批次，请先到「活动批次」创建</p>
               )}
             </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">本单优惠抵扣（元，可选）</label>
-              <input
-                type="number"
-                value={bindCoupon}
-                onChange={(e) => setBindCoupon(Number(e.target.value) || 0)}
-                placeholder="如：40（自动限 ≤ 票数×上限、≤ 优惠金剩余）"
-                className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
-              />
-            </div>
+            {bindType === 'code' ? (
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">核销码成本（元/张，可选）</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={bindCodeCost}
+                  onChange={(e) => setBindCodeCost(Number(e.target.value) || 0)}
+                  placeholder="默认 0（充值活动赠送，无成本）"
+                  className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">本单优惠抵扣（元，可选）</label>
+                <input
+                  type="number"
+                  value={bindCoupon}
+                  onChange={(e) => setBindCoupon(Number(e.target.value) || 0)}
+                  placeholder="如：40（自动限 ≤ 票数×上限、≤ 优惠金剩余）"
+                  className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:border-purple-400"
+                />
+              </div>
+            )}
             {/* 预计利润预览（亏损红色预警） */}
             {bindBatchId && bindOrder && (() => {
               const b = batches.find((x) => x.id === bindBatchId);
               const rule = getRuleForDate(loadRules(), orderDate(bindOrder.order));
               const isJ = bindOrder.cinema === 'jinyi';
-              const costNormal = (isJ ? rule.jinyiCost : rule.jiaheCost) * bindOrder.tickets;
+              const isCode = bindType === 'code';
+              const costNormal = isCode
+                ? (Number(bindCodeCost) || 0) * bindOrder.tickets
+                : (isJ ? rule.jinyiCost : rule.jiaheCost) * bindOrder.tickets;
               const maxByTicket = bindOrder.tickets * (b?.couponPerTicket || 0);
-              const couponUsed = Math.min(Number(bindCoupon) || 0, maxByTicket, b?.couponLeft ?? 0);
+              const couponUsed = isCode ? 0 : Math.min(Number(bindCoupon) || 0, maxByTicket, b?.couponLeft ?? 0);
               const costActual = Math.max(0, costNormal - couponUsed);
-              const income = (isJ ? rule.jinyiSell : rule.jiaheSell) * bindOrder.tickets;
+              const income = isCode
+                ? (isJ ? rule.jinyiCode : rule.jiaheCode) * bindOrder.tickets
+                : (isJ ? rule.jinyiSell : rule.jiaheSell) * bindOrder.tickets;
               const estProfit = income - costActual;
               const isLoss = estProfit < 0;
               return (
                 <div className={`rounded-lg p-3 text-xs space-y-0.5 ${isLoss ? 'bg-red-50 border border-red-200' : 'bg-blue-50 border border-blue-100'}`}>
-                  <p className="text-gray-500">正常成本：¥{costNormal.toFixed(2)} ｜ 本单优惠抵扣：¥{couponUsed.toFixed(2)}</p>
-                  <p className="text-gray-500">实际成本：¥{costActual.toFixed(2)} ｜ 客户售价：¥{income.toFixed(2)}</p>
+                  {isCode ? (
+                    <>
+                      <p className="text-gray-500">核销码收入：¥{income.toFixed(2)}（{isJ ? rule.jinyiCode : rule.jiaheCode} × {bindOrder.tickets} 张）</p>
+                      <p className="text-gray-500">核销码成本：¥{costActual.toFixed(2)}</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-gray-500">正常成本：¥{costNormal.toFixed(2)} ｜ 本单优惠抵扣：¥{couponUsed.toFixed(2)}</p>
+                      <p className="text-gray-500">实际成本：¥{costActual.toFixed(2)} ｜ 客户售价：¥{income.toFixed(2)}</p>
+                    </>
+                  )}
                   <p className={`font-bold ${isLoss ? 'text-red-600' : 'text-blue-600'}`}>
                     预计利润：{estProfit >= 0 ? '+' : ''}¥{estProfit.toFixed(2)}
                     {isLoss && ' ⚠️ 本单亏损'}
