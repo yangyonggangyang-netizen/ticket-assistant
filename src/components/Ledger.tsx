@@ -6,6 +6,7 @@ import { loadOverrides, saveOverride, clearOverride } from '../store/ledgerOverr
 import { loadRules, saveRules, PriceRule, loadBatches, saveBatches, loadOrders as loadBatchOrders, saveOrders as saveBatchOrders, refreshBatchStatuses, getRuleForDate } from '../store/batchStore';
 import { loadRedemptions, saveRedemptions, addRedemption, deleteRedemption, genCodes, RedemptionRecord } from '../store/redemptionStore';
 import BatchManager from './BatchManager';
+import GoodsVoucherQuery from './GoodsVoucherQuery';
 
 // 固定卖价配置（localStorage 持久化，可编辑）
 const PRICES_KEY = 'ledger_prices';
@@ -189,8 +190,8 @@ export default function Ledger() {
   const [priceEdit, setPriceEdit] = useState<LedgerPrices>(loadPrices);
   const [showPriceEdit, setShowPriceEdit] = useState(false);
   const [priceMsg, setPriceMsg] = useState('');
-  // 视图切换：calendar=记账日历 / batches=活动批次
-  const [view, setView] = useState<'calendar' | 'batches'>('calendar');
+  // 视图切换：calendar=记账日历 / batches=活动批次 / goods=卖品券码
+  const [view, setView] = useState<'calendar' | 'batches' | 'goods'>('calendar');
   // 价格规则（按日期多版本）
   const [priceRules, setPriceRules] = useState<PriceRule[]>(loadRules);
   const [newRule, setNewRule] = useState<{ from: string; to: string; jinyiCost: number; jinyiSell: number; jinyiCode: number; jiaheCost: number; jiaheSell: number; jiaheCode: number; note: string }>({
@@ -717,10 +718,18 @@ export default function Ledger() {
         >
           <Layers className="w-4 h-4" /> 活动批次
         </button>
+        <button
+          onClick={() => setView('goods')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg ${view === 'goods' ? 'bg-pink-500 text-white' : 'bg-white border text-gray-500 hover:bg-gray-50'}`}
+        >
+          <Ticket className="w-4 h-4" /> 卖品券码
+        </button>
       </div>
 
       {/* 活动批次视图 */}
       {view === 'batches' && <BatchManager />}
+      {/* 卖品券码查询视图 */}
+      {view === 'goods' && <GoodsVoucherQuery />}
 
       {priceMsg && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-2.5 text-sm text-green-700">{priceMsg}</div>

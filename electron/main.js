@@ -764,6 +764,31 @@ app.whenReady().then(() => {
     ipcMain.handle('updater:version', () => app.getVersion());
   }
 
+  // ===== 卖品券码截图保存 =====
+  const SNAP_DIR = path.join(app.getPath('userData'), '卖品券截图');
+  ipcMain.handle('goods:savePng', async (event, { dataUrl, fileName }) => {
+    try {
+      const base64 = String(dataUrl || '').replace(/^data:image\/png;base64,/, '');
+      if (!base64) return { success: false, error: '图片数据为空' };
+      fs.mkdirSync(SNAP_DIR, { recursive: true });
+      const safeName = String(fileName || 'voucher').replace(/[\\/:*?"<>|\r\n]/g, '_').slice(0, 80);
+      const file = path.join(SNAP_DIR, `${safeName}.png`);
+      fs.writeFileSync(file, Buffer.from(base64, 'base64'));
+      return { success: true, path: file };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+  ipcMain.handle('goods:openSnapDir', async () => {
+    try {
+      fs.mkdirSync(SNAP_DIR, { recursive: true });
+      const result = await shell.openPath(SNAP_DIR);
+      return { success: !result, error: result || undefined };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  });
+
   createWindow();
 
   // 启动后自动检查更新（延时 3 秒，不打扰启动；有新版自动下载，下载完提示一键重启）

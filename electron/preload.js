@@ -47,4 +47,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onCaptureDone: (callback) => {
     ipcRenderer.on('capture:done', (event, data) => callback(data));
   },
+  saveGoodsVoucherPng: (dataUrl, fileName) => ipcRenderer.invoke('goods:savePng', { dataUrl, fileName }),
+  openGoodsSnapDir: () => ipcRenderer.invoke('goods:openSnapDir'),
 });
