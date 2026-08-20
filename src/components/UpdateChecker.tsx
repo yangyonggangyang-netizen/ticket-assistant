@@ -83,7 +83,7 @@ export default function UpdateChecker() {
       </div>
 
       {state === 'available' && (
-        <div className="bg-blue-900/50 border border-blue-700 rounded-lg p-2 space-y-2">
+        <div className="bg-blue-900/50 border border-blue-700 rounded-lg p-2 space-y-1.5">
           <div className="flex items-center gap-1.5 text-blue-300 text-xs">
             <Download className="w-3 h-3" />
             发现新版本 v{newVersion}
@@ -95,12 +95,10 @@ export default function UpdateChecker() {
                 : '新版本已发布'}
             </p>
           )}
-          <button
-            onClick={handleDownload}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-1.5 rounded"
-          >
-            下载更新
-          </button>
+          <p className="text-xs text-blue-200 flex items-center gap-1">
+            <Loader className="w-3 h-3 animate-spin" />
+            正在自动下载...
+          </p>
         </div>
       )}
 

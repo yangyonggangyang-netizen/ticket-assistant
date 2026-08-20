@@ -6,9 +6,21 @@ const { execFile, exec } = require('child_process');
 // ========== Auto Updater ==========
 const { autoUpdater } = require('electron-updater');
 let updaterReady = false;
+// 更新源：默认自有服务器（广州轻量，国内秒下），userData/server_config.json 可覆盖（未来切 HTTPS 域名）
+let UPDATE_FEED_URL = 'http://8.134.105.236/updates';
 try {
-  autoUpdater.autoDownload = false;
+  const cfgFile = path.join(app.getPath('userData'), 'server_config.json');
+  if (fs.existsSync(cfgFile)) {
+    const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf-8'));
+    if (cfg.updateUrl) UPDATE_FEED_URL = cfg.updateUrl;
+  }
+} catch (e) {
+  console.log('[updater] config load failed:', e.message);
+}
+try {
+  autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.setFeedURL({ provider: 'generic', url: UPDATE_FEED_URL });
   updaterReady = true;
 } catch (e) {
   console.log('[updater] not available in dev mode:', e.message);
@@ -753,6 +765,15 @@ app.whenReady().then(() => {
   }
 
   createWindow();
+
+  // 启动后自动检查更新（延时 3 秒，不打扰启动；有新版自动下载，下载完提示一键重启）
+  if (updaterReady) {
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((e) => {
+        console.log('[updater] auto check failed:', e.message);
+      });
+    }, 3000);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
