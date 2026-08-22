@@ -77,18 +77,21 @@ function parseSnackVoucher(o: any, accountName: string): SnackVoucher | null {
   );
   const code = String(o.printNo || o.print_no || o.verifyCode || o.verify_code || '').trim();
   if (!code) return null;
-  // 使用状态：有出库信息的按 outNum>=amount 判断；没有出库信息时按订单状态兜底（5/6/7=已完成）
+  // 使用状态（v1.0.58 修正）：影联卖品订单用 send_state 标记发放状态（0=未取货 1=已取货，实测确认）
+  // 优先 send_state；没有才按出库信息 outNum>=amount 判断；都没有则默认未取货
+  const sendState = o.send_state != null ? String(o.send_state) : '';
   const hasOutInfo = items.some((g: any) => (g.outNum ?? g.takeNum ?? g.out_num ?? g.takenNum) != null);
-  const orderStatus = String(o.status ?? '');
   let taken: boolean;
-  if (items.length > 0 && hasOutInfo) {
+  if (sendState !== '') {
+    taken = sendState === '1';
+  } else if (items.length > 0 && hasOutInfo) {
     taken = items.every((g: any) => {
       const amount = Number(g.amount ?? g.num ?? g.take_num ?? g.buyNum ?? 1);
       const outNum = Number(g.outNum ?? g.takeNum ?? g.out_num ?? g.takenNum ?? 0);
       return outNum >= amount;
     });
   } else {
-    taken = items.length > 0 && ['5', '6', '7'].includes(orderStatus);
+    taken = false;
   }
   return { id: String(o.id ?? o.orderNo ?? o.order_no ?? ''), name, code, taken, account: accountName, items };
 }
